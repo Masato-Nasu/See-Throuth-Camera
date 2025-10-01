@@ -6,7 +6,8 @@
   <title>視覚支援AR：方向（時計）、距離、物体を日本語で読み上げ</title>
   <meta name="description" content="最も近い対象を優先し、時計方向・距離・物体名を日本語で読み上げます。信号機の赤/青も対応。ラベルは大きく日本語で表示し、切れないよう自動調整。" />
   <!-- 正しいCDN（余計なインラインJSを混ぜない） -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.19.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.19.0/dist/tf.min.js">})();
+</script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
   <style>
     :root{ --green:#39ff14; --text:#e8ffe8; }
@@ -49,7 +50,8 @@
     </div>
   </div>
 
-<script type="module">
+<script>
+(async()=>{
 const v=document.getElementById('v');
 const ov=document.getElementById('ov');
 const ctx=ov.getContext('2d');
