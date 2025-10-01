@@ -52,10 +52,30 @@
 const v=document.getElementById('v');
 const ov=document.getElementById('ov');
 const ctx=ov.getContext('2d');
-const toast=(m)=>{ const t=document.getElementById('toast'); t.textContent=m; t.style.display='block'; clearTimeout(toast._t); toast._t=setTimeout(()=>t.style.display='none', 2200); };
+const toast=(m)=>{ const t=document.getElementById('toast'); t.textContent=m; t.style.display='block'; clearTimeout(toast._t); toast._t=setTimeout(()=>t.style.display='none', 2400); }; console.log('[A11yAR] boot');
 let model=null, detTimer=null;
+async function loadModelWithFallback(){
+  try{ model=await cocoSsd.load({base:'lite_mobilenet_v2'}); return true; }
+  catch(e1){ console.warn('[A11yAR] coco-ssd load failed (primary)', e1);
+    try{
+      await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://unpkg.com/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); });
+      model=await cocoSsd.load({base:'lite_mobilenet_v2'}); return true;
+    }catch(e2){ console.warn('[A11yAR] coco-ssd load failed (fallback)', e2); return false; }
+  }
+}
 
 async function startCamera(){
+  if(!window.isSecureContext && location.hostname!=='localhost' && location.hostname!=='127.0.0.1'){
+    toast('⚠ HTTPSが必要です（または localhost）');
+    throw new Error('Insecure');
+  }
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:false });
+    v.srcObject=stream; await new Promise(res=> v.onloadedmetadata=res); await v.play();
+    resize(); addEventListener('resize', resize);
+    toast('📷 カメラ起動');
+  }catch(e){ console.error('[A11yAR] camera error', e); toast('❌ カメラ失敗: '+e.name+': '+e.message); throw e; }
+}{
   if(!window.isSecureContext){ toast('⚠ HTTPSが必要です'); throw new Error('Insecure'); }
   const stream=await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:false });
   v.srcObject=stream; await new Promise(res=> v.onloadedmetadata=res); await v.play(); resize(); addEventListener('resize', resize); toast('📷 カメラ起動');
@@ -158,7 +178,18 @@ fovEl.addEventListener('input',()=>{ toast('FOV '+fovEl.value+'°'); sayThrottle
 
 // ==== Boot
 const gateBtn=document.getElementById('gateStart');
-gateBtn.onclick = async()=>{ document.getElementById('gate').style.display='none'; try{ await startCamera(); toast('📦 モデル読込中…'); model=await cocoSsd.load({base:'lite_mobilenet_v2'}); toast('✅ 準備完了'); detLoop(); }catch(e){ toast('❌ 起動失敗: '+e.message); } };
+async function startAll(){
+  document.getElementById('gate').style.display='none';
+  await startCamera();
+  toast('📦 モデル読込中…');
+  const ok = await loadModelWithFallback();
+  if(ok){ toast('✅ 準備完了'); detLoop(); }
+  else { toast('⚠ モデル読み込み不可：カメラのみ動作（ネット/CDNを確認）'); }
+}
+const gateBtn=document.getElementById('gateStart');
+gateBtn.onclick = ()=>{ startAll().catch(e=>console.error(e)); };
+const startBtn=document.getElementById('startBtn');
+if(startBtn){ startBtn.onclick = ()=>{ startAll().catch(e=>console.error(e)); }; }e); } };
 </script>
 </body>
 </html>
