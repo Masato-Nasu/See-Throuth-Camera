@@ -3,155 +3,74 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>AR 思考ストリーム — カメラ背景 + 緑ネオン</title>
+  <title>AR 思考ストリーム — カメラ背景 + 緑ネオン + 物体認識/距離(概算)</title>
+  <!-- TF.js & COCO-SSD (物体検出) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.19.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3"></script>
   <style>
     :root{
       --bg: #000;
       --hud: rgba(0, 0, 0, 0.25);
       --grid: rgba(0, 255, 128, 0.12);
       --green: #39ff14; /* ネオン系グリーン */
-      --green-dim: #21b90b;
       --text: #d7ffd7;
     }
-    html, body {
-      margin: 0; height: 100%; background: var(--bg); color: var(--text);
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-      overflow: hidden;
-    }
-    /* フル画面のカメラ映像 */
+    html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; overflow:hidden; }
+
+    /* カメラ映像 */
     #camWrap { position: fixed; inset: 0; overflow: hidden; }
-    #video {
-      position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
-      filter: saturate(1.1) contrast(1.05) brightness(1.05);
-      transform: scaleX(-1); /* 反転が不要なら消す */
-    }
+    #video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; filter:saturate(1.1) contrast(1.05) brightness(1.05); transform: scaleX(-1); }
 
-    /* 透明ウィンドウ（HUD） */
-    #hud {
-      position: fixed; inset: 0; pointer-events: none;
-    }
-    .panel {
-      position: absolute; left: 50%; transform: translateX(-50%);
-      bottom: 6vh; width: min(1000px, 92vw); height: 52vh;
-      background: linear-gradient(180deg, rgba(0,0,0,0.15), rgba(0,0,0,0.35));
-      border: 1px solid rgba(57,255,20,0.35);
-      border-radius: 16px;
-      box-shadow: 0 0 24px rgba(57,255,20,0.12), inset 0 0 40px rgba(57,255,20,0.06);
-      backdrop-filter: blur(6px) saturate(1.1);
-      -webkit-backdrop-filter: blur(6px) saturate(1.1);
-      overflow: hidden;
-    }
+    /* 物体検出オーバーレイ */
+    #overlay { position:absolute; inset:0; pointer-events:none; }
 
-    /* スキャンライン & グリッド演出 */
-    .panel::before{ /* スキャンライン */
-      content:""; position:absolute; inset:0;
-      background:
-        repeating-linear-gradient(
-          to bottom,
-          rgba(0,255,128,0.05), rgba(0,255,128,0.05) 2px,
-          transparent 2px, transparent 6px
-        );
-      mix-blend-mode: screen; pointer-events:none;
-      animation: scan 5s linear infinite;
-    }
+    /* HUDパネル */
+    #hud { position: fixed; inset: 0; pointer-events: none; }
+    .panel { position:absolute; left:50%; transform:translateX(-50%); bottom:6vh; width:min(1000px,92vw); height:52vh; background: linear-gradient(180deg, rgba(0,0,0,0.15), rgba(0,0,0,0.35)); border: 1px solid rgba(57,255,20,0.35); border-radius: 16px; box-shadow: 0 0 24px rgba(57,255,20,0.12), inset 0 0 40px rgba(57,255,20,0.06); backdrop-filter: blur(6px) saturate(1.1); -webkit-backdrop-filter: blur(6px) saturate(1.1); overflow:hidden; }
+    .panel::before{ content:""; position:absolute; inset:0; background: repeating-linear-gradient(to bottom, rgba(0,255,128,0.05), rgba(0,255,128,0.05) 2px, transparent 2px, transparent 6px); mix-blend-mode: screen; pointer-events:none; animation: scan 5s linear infinite; }
     @keyframes scan{ from{ transform: translateY(-10%);} to{ transform: translateY(10%);} }
-    .panel::after{ /* グリッド */
-      content:""; position:absolute; inset:0;
-      background:
-        linear-gradient(var(--grid) 1px, transparent 1px),
-        linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-      background-size: 32px 32px, 32px 32px;
-      mask-image: linear-gradient(to top, transparent, rgba(0,0,0,0.6) 30%, rgba(0,0,0,0.9));
-      pointer-events:none;
-    }
+    .panel::after{ content:""; position:absolute; inset:0; background: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size: 32px 32px, 32px 32px; mask-image: linear-gradient(to top, transparent, rgba(0,0,0,0.6) 30%, rgba(0,0,0,0.9)); pointer-events:none; }
+    .title { position:absolute; inset:0 0 auto 0; height:42px; background: linear-gradient(90deg, rgba(57,255,20,0.2), rgba(57,255,20,0), rgba(57,255,20,0.2)); border-bottom:1px solid rgba(57,255,20,0.35); display:flex; align-items:center; padding:0 16px; font-weight:600; letter-spacing:.06em; color:var(--green); text-shadow:0 0 8px rgba(57,255,20,.8), 0 0 18px rgba(57,255,20,.4); }
+    #stream { position:absolute; top:50px; bottom:82px; left:0; right:0; padding: 14px 16px 24px; overflow:hidden; font-size: clamp(12px, 1.9vw, 16px); line-height: 1.6; color: var(--text); }
+    .line { opacity:.95; margin:2px 0; white-space:pre-wrap; word-break:break-word; text-shadow: 0 0 10px rgba(57,255,20,.55), 0 0 28px rgba(57,255,20,.35); }
+    .cursor::after{ content:"▌"; animation: blink 1s steps(1, start) infinite; color: var(--green);} @keyframes blink { 50%{ opacity:0; } }
 
-    /* タイトル帯 */
-    .title {
-      position: absolute; inset: 0 0 auto 0; height: 42px;
-      background: linear-gradient(90deg, rgba(57,255,20,0.2), rgba(57,255,20,0), rgba(57,255,20,0.2));
-      border-bottom: 1px solid rgba(57,255,20,0.35);
-      display: flex; align-items: center; padding: 0 16px;
-      font-weight: 600; letter-spacing: 0.06em; color: var(--green);
-      text-shadow: 0 0 8px rgba(57,255,20,0.8), 0 0 18px rgba(57,255,20,0.4);
-    }
+    #controls { position:absolute; inset:auto 0 0 0; height:82px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:8px 10px; background: linear-gradient(0deg, rgba(0,0,0,0.55), rgba(0,0,0,0.15)); border-top: 1px solid rgba(57,255,20,0.25); pointer-events:auto; }
+    .btn { border:1px solid rgba(57,255,20,.55); background: rgba(0,0,0,.25); color: var(--green); padding:8px 12px; border-radius:10px; font-weight:600; letter-spacing:.04em; cursor:pointer; box-shadow: 0 0 12px rgba(57,255,20,.25) inset; }
+    .input, .range { border:1px solid rgba(57,255,20,.35); background: rgba(0,0,0,.25); color: var(--text); border-radius:8px; padding:6px 10px; }
+    .label { color: var(--green); font-size:12px; margin:0 6px 0 4px; opacity:.9; }
 
-    /* スクロールする思考テキスト */
-    #stream {
-      position: absolute; top: 50px; bottom: 56px; left: 0; right: 0;
-      padding: 14px 16px 24px; overflow: hidden; /* 自前でオートスクロール */
-      font-size: clamp(12px, 1.9vw, 16px); line-height: 1.6;
-      color: var(--text);
-    }
-    .line {
-      opacity: 0.9; margin: 2px 0; white-space: pre-wrap; word-break: break-word;
-      text-shadow: 0 0 8px rgba(57,255,20,0.45), 0 0 22px rgba(57,255,20,0.3);
-    }
-    .cursor::after{ content:"▌"; animation: blink 1s steps(1, start) infinite; color: var(--green); }
-    @keyframes blink { 50% { opacity: 0; } }
+    #gate { position:fixed; inset:0; display:grid; place-items:center; background: radial-gradient(1200px 600px at center, rgba(0,0,0,0.6), rgba(0,0,0,0.92)); color:var(--text); z-index:10; text-align:center; padding:24px; }
+    #gate .start{ font-size:18px; padding:12px 20px; border-radius:14px; cursor:pointer; border:1px solid rgba(57,255,20,.6); background: rgba(0,0,0,.35); color: var(--green); text-shadow:0 0 10px rgba(57,255,20,.9); }
 
-    /* 下部の操作系（半透明） */
-    #controls {
-      position: absolute; inset: auto 0 0 0; height: 56px; display: flex;
-      gap: 8px; align-items: center; padding: 8px 10px;
-      background: linear-gradient(0deg, rgba(0,0,0,0.55), rgba(0,0,0,0.15));
-      border-top: 1px solid rgba(57,255,20,0.25);
-      pointer-events: auto;
-    }
-    #controls > * { pointer-events: auto; }
-    .btn {
-      border: 1px solid rgba(57,255,20,0.55); background: rgba(0,0,0,0.25);
-      color: var(--green); padding: 8px 12px; border-radius: 10px;
-      font-weight: 600; letter-spacing: .04em; cursor: pointer;
-      text-shadow: 0 0 8px rgba(57,255,20,0.7);
-      box-shadow: 0 0 12px rgba(57,255,20,0.25) inset;
-      transition: transform .08s ease, box-shadow .2s ease;
-    }
-    .btn:active { transform: translateY(1px) scale(0.99); }
-    .input {
-      flex: 1; min-width: 80px; padding: 8px 10px; border-radius: 8px;
-      border: 1px solid rgba(57,255,20,0.35); background: rgba(0,0,0,0.25);
-      color: var(--text);
-    }
-    .label { color: var(--green); font-size: 12px; margin: 0 6px 0 4px; opacity: .9; }
-    .range { width: 120px; accent-color: var(--green); }
-
-    /* 初期オーバーレイ（iOSでのユーザジェスチャ対応） */
-    #gate {
-      position: fixed; inset: 0; display: grid; place-items: center;
-      background: radial-gradient(1200px 600px at center, rgba(0,0,0,0.6), rgba(0,0,0,0.92));
-      color: var(--text); z-index: 10; text-align: center; padding: 24px;
-    }
-    #gate .start {
-      font-size: 18px; padding: 12px 20px; border-radius: 14px; cursor: pointer;
-      border: 1px solid rgba(57,255,20,0.6); background: rgba(0,0,0,0.35); color: var(--green);
-      text-shadow: 0 0 10px rgba(57,255,20,0.9);
-    }
-    #gate small{ opacity:.7; display:block; margin-top:10px; }
-
-    /* モバイル対処 */
-    @media (max-width: 640px){
-      .panel{ height: 56vh; }
-      #controls{ height: 64px; }
-      #stream{ bottom: 64px; }
-    }
+    @media (max-width: 640px){ .panel{ height: 58vh; } #controls{ height: 96px; } #stream{ bottom: 96px; } }
   </style>
 </head>
 <body>
   <div id="camWrap">
     <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
   </div>
 
   <div id="hud">
     <div class="panel" id="panel">
-      <div class="title">AI THOUGHT STREAM — SENSOR-FUSED / GREEN NEON</div>
+      <div class="title">AI THOUGHT STREAM — SENSOR FUSION / OBJECTS / RANGE(EST.)</div>
       <div id="stream"></div>
       <div id="controls">
         <button class="btn" id="btnToggle">▶︎ START</button>
         <button class="btn" id="btnClear">CLEAR</button>
-        <span class="label">Opacity</span>
-        <input class="range" id="opacity" type="range" min="0" max="100" value="85" />
-        <span class="label">Glow</span>
-        <input class="range" id="glow" type="range" min="0" max="100" value="60" />
+        <span class="label">Text rate</span>
+        <input class="range" id="rate" type="range" min="5" max="60" value="14" />
+        <span class="label">Typing</span>
+        <input class="range" id="typing" type="range" min="15" max="120" value="55" />
+        <span class="label">Max lines</span>
+        <input class="range" id="maxlines" type="range" min="20" max="300" value="120" />
+        <span class="label">Detect</span>
+        <input id="detectOn" type="checkbox" checked />
+        <span class="label">FOV°</span>
+        <input class="range" id="fov" type="range" min="45" max="85" value="60" />
+        <span class="label">Intvl(ms)</span>
+        <input class="range" id="detInt" type="range" min="200" max="1500" value="650" />
         <input class="input" id="prompt" placeholder="環境メモ / キーワード（任意）" />
       </div>
     </div>
@@ -160,219 +79,142 @@
   <div id="gate">
     <div>
       <h2 style="margin:0 0 10px 0;color:var(--green);text-shadow:0 0 16px rgba(57,255,20,.9)">カメラへのアクセスが必要です</h2>
-      <p style="margin:0 0 16px 0">「開始」ボタンを押すと、背面カメラ映像の上に緑色の思考ストリームを重ねて表示します。</p>
+      <p style="margin:0 0 16px 0">「開始」を押すと、背面カメラ映像にネオン緑の思考ストリームと物体検出を重ねます。</p>
       <button class="start" id="gateStart">開始 / START</button>
-      <small>（iOSはユーザ操作後でないとカメラ再生できません）</small>
+      <small>※距離は単眼推定の概算（対象の平均サイズとFOV仮定による）。</small>
     </div>
   </div>
 
 <script>
-  // ====== カメラ起動 ======
-  async function startCamera(){
-    const video = document.getElementById('video');
-    try{
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } },
-        audio: false
-      });
-      video.srcObject = stream;
-      await video.play();
-    }catch(err){
-      console.error(err);
-      alert('カメラにアクセスできませんでした: ' + err.message);
-    }
-  }
+  // ====== カメラ & オーバーレイ初期化 ======
+  const video = document.getElementById('video');
+  const overlay = document.getElementById('overlay');
+  const octx = overlay.getContext('2d');
 
-  // ====== HUD 見た目調整 ======
+  async function startCamera(){
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio:false });
+      video.srcObject = stream; await video.play();
+      resizeOverlay();
+      window.addEventListener('resize', resizeOverlay);
+    }catch(err){ alert('カメラにアクセスできません: '+err.message); console.error(err); }
+  }
+  function resizeOverlay(){ overlay.width = video.clientWidth; overlay.height = video.clientHeight; }
+
+  // ====== HUD・UI ======
   const panelEl = document.getElementById('panel');
   const streamEl = document.getElementById('stream');
-  const opacityEl = document.getElementById('opacity');
-  const glowEl = document.getElementById('glow');
-  opacityEl.addEventListener('input', () => {
-    panelEl.style.background = `linear-gradient(180deg, rgba(0,0,0,${(opacityEl.value/100)*0.25}), rgba(0,0,0,${(opacityEl.value/100)*0.55}))`;
-  });
-  glowEl.addEventListener('input', () => {
-    const pct = glowEl.value/100;
-    document.querySelectorAll('.line').forEach(el=>{
-      el.style.textShadow = `0 0 ${8+24*pct}px rgba(57,255,20,${0.45+0.35*pct}), 0 0 ${18+30*pct}px rgba(57,255,20,${0.3+0.4*pct})`;
-    });
-  });
+  const btnToggle = document.getElementById('btnToggle');
+  const btnClear  = document.getElementById('btnClear');
+  const rateEl    = document.getElementById('rate');     // 行/分
+  const typingEl  = document.getElementById('typing');   // タイプ刻み(ms)
+  const maxLinesEl= document.getElementById('maxlines');
+  const detectOnEl= document.getElementById('detectOn');
+  const fovEl     = document.getElementById('fov');
+  const detIntEl  = document.getElementById('detInt');
 
-  // ====== センサー簡易取得（対応端末のみ） ======
-  const sensors = { motion: null, orientation: null, geo: null };
+  // ====== センサー ======
+  const sensors = { motion:null, orientation:null, geo:null };
   function setupSensors(){
     if (window.DeviceMotionEvent){
       window.addEventListener('devicemotion', (e)=>{
-        sensors.motion = {
-          ax: e.accelerationIncludingGravity?.x ?? 0,
-          ay: e.accelerationIncludingGravity?.y ?? 0,
-          az: e.accelerationIncludingGravity?.z ?? 0
-        };
-      }, { passive: true });
+        sensors.motion = { ax:e.accelerationIncludingGravity?.x??0, ay:e.accelerationIncludingGravity?.y??0, az:e.accelerationIncludingGravity?.z??0 };
+      }, {passive:true});
     }
     if (window.DeviceOrientationEvent){
-      window.addEventListener('deviceorientation', (e)=>{
-        sensors.orientation = { alpha: e.alpha, beta: e.beta, gamma: e.gamma };
-      }, { passive: true });
+      window.addEventListener('deviceorientation', (e)=>{ sensors.orientation = { alpha:e.alpha, beta:e.beta, gamma:e.gamma }; }, {passive:true});
     }
-    if (navigator.geolocation){
-      navigator.geolocation.getCurrentPosition((pos)=>{
-        sensors.geo = { lat: pos.coords.latitude.toFixed(5), lon: pos.coords.longitude.toFixed(5) };
-      }, ()=>{}, { enableHighAccuracy: false, timeout: 3000 });
-    }
+    if (navigator.geolocation){ navigator.geolocation.getCurrentPosition((pos)=>{ sensors.geo = { lat: pos.coords.latitude.toFixed(5), lon: pos.coords.longitude.toFixed(5) }; }, ()=>{}, { maximumAge:60000, timeout:3000 }); }
   }
-
-  // ====== 思考ストリーム生成（ダミー or API） ======
-  let running = false; let typerTimer = null;
-  const seedPhrases = [
-    '光量チェック… エッジ強度低 → 暗所モード',
-    '環境雑音: 低 (≈ 32dB) // 推定',
-    '位置推定: Tokyo周辺? geoセンサ待機…',
-    '問いの輪郭を抽出中…',
-    '関連記憶を走査… 類似事例=3件',
-    '曖昧さを許容→仮説を2本走らせる',
-    '説明可能性 > 厳密性 を一時優先',
-    'センサー→プロンプトへ結合重み w=0.35',
-    '自己修正ループを解放…',
-    '次トークンの分布が広い → 表現を詰める',
-  ];
-
   function sensorSummary(){
-    const parts = [];
-    if (sensors.geo) parts.push(`GPS ${sensors.geo.lat},${sensors.geo.lon}`);
-    if (sensors.motion) parts.push(`加速度 x:${sensors.motion.ax?.toFixed(1)} y:${sensors.motion.ay?.toFixed(1)} z:${sensors.motion.az?.toFixed(1)}`);
-    if (sensors.orientation) parts.push(`姿勢 α:${sensors.orientation.alpha?.toFixed(0)} β:${sensors.orientation.beta?.toFixed(0)} γ:${sensors.orientation.gamma?.toFixed(0)}`);
-    return parts.join(' | ');
+    const p=[]; if (sensors.geo) p.push(`GPS ${sensors.geo.lat},${sensors.geo.lon}`); if (sensors.motion) p.push(`acc x:${sensors.motion.ax?.toFixed(1)} y:${sensors.motion.ay?.toFixed(1)} z:${sensors.motion.az?.toFixed(1)}`); if (sensors.orientation) p.push(`ori α:${sensors.orientation.alpha?.toFixed(0)} β:${sensors.orientation.beta?.toFixed(0)} γ:${sensors.orientation.gamma?.toFixed(0)}`); return p.join(' | ');
   }
 
+  // ====== 思考ストリーム（遅め＆可変） ======
+  let running=false; let loopTimer=null;
+  const seedPhrases = [
+    '光量チェック… エッジ低→暗所補正',
+    '環境雑音: 低 // 推定',
+    '位置推定: Tokyo 近傍?',
+    '問いの輪郭抽出中…',
+    '類似事例=3件 / confidence=0.62',
+    '曖昧さ許容→仮説を並列化',
+    '説明可能性>厳密性 を暫定優先',
+    'センサー重み w=0.35',
+    '自己修正ループ: on',
+    '分布が広い→表現を圧縮',
+  ];
   function pushLine(text, withCursor=false){
-    const div = document.createElement('div');
-    div.className = 'line' + (withCursor ? ' cursor' : '');
-    div.textContent = text;
-    streamEl.appendChild(div);
-    // オートスクロール: 下に寄せる
-    streamEl.scrollTo({ top: streamEl.scrollHeight, behavior: 'smooth' });
-    glowEl.dispatchEvent(new Event('input'));
+    const div=document.createElement('div'); div.className='line'+(withCursor?' cursor':''); div.textContent=text; streamEl.appendChild(div);
+    // 古い行を削除
+    const maxLines = parseInt(maxLinesEl.value,10); while(streamEl.children.length>maxLines){ streamEl.removeChild(streamEl.firstChild); }
+    streamEl.scrollTo({ top: streamEl.scrollHeight, behavior:'smooth' });
   }
-
-  function* typewriterChunks(str, chunk=2){
-    let i=0; while(i < str.length){ yield str.slice(i, i+=chunk); }
+  function* typewriterChunks(str){ let i=0, step= (Math.random()<0.5?2:1); while(i<str.length){ yield str.slice(i, i+=step); } }
+  async function typeLine(line){
+    const it = typewriterChunks(line); let acc='';
+    const stepFn=()=>{ const n=it.next(); if(n.done){ const last=streamEl.lastElementChild; if (last) last.classList.remove('cursor'); return; } acc+=n.value; const last=streamEl.lastElementChild; if(!last||!last.classList.contains('cursor')){ pushLine(acc,true);} else { last.textContent=acc; } streamEl.scrollTop=streamEl.scrollHeight; setTimeout(stepFn, parseInt(typingEl.value,10)); };
+    stepFn();
   }
-
   async function startStream(){
-    if (running) return; running = true;
-    pushLine('--- THOUGHT STREAM ONLINE ---');
+    if(running) return; running=true; pushLine('--- THOUGHT STREAM ONLINE ---');
     const prompt = document.getElementById('prompt').value.trim();
-
-    // ループ: ダミー生成（必要に応じてOpenAIストリーミングに差し替え）
-    const loop = async () => {
-      if (!running) return;
+    const loop = ()=>{
+      if(!running) return;
       const base = seedPhrases[Math.floor(Math.random()*seedPhrases.length)];
       const sens = sensorSummary();
-      const line = [new Date().toLocaleTimeString(), base, sens, (prompt? `hint:${prompt}`: '')]
-        .filter(Boolean).join('  //  ');
-      await typeLine(line);
-      // テンポ
-      const wait = 400 + Math.random()*900;
-      typerTimer = setTimeout(loop, wait);
+      const line = [new Date().toLocaleTimeString(), base, sens, (prompt?`hint:${prompt}`:'')].filter(Boolean).join('  //  ');
+      typeLine(line);
+      const linesPerMin = parseInt(rateEl.value,10); const interval = Math.max(60000/linesPerMin, 400); // 下限400ms
+      loopTimer=setTimeout(loop, interval + Math.random()*0.4*interval);
     };
     loop();
   }
+  function stopStream(){ running=false; clearTimeout(loopTimer); const last=streamEl.lastElementChild; if(last) last.classList.remove('cursor'); pushLine('--- PAUSED ---'); }
 
-  async function typeLine(line){
-    // タイプライタ演出
-    const it = typewriterChunks(line, Math.random() < 0.5 ? 1 : 2);
-    let acc = '';
-    const step = () => {
-      const n = it.next();
-      if (n.done){
-        // 最後にカーソルを一瞬だけ付けて外す
-        pushLine(acc);
-        return;
-      }
-      acc += n.value;
-      // 描画は最後にまとめて: ちらつきを抑える
-      // → 小刻みに見せたいので毎回置き換え
-      const last = streamEl.lastElementChild;
-      if (!last || !last.classList.contains('cursor')){
-        pushLine(acc, true);
-      } else {
-        last.textContent = acc;
-      }
-      streamEl.scrollTop = streamEl.scrollHeight;
-      setTimeout(step, 12 + Math.random()*38);
-    };
-    step();
-  }
+  btnToggle.addEventListener('click', ()=>{ if(!running){ btnToggle.textContent='⏸ PAUSE'; startStream(); } else { btnToggle.textContent='▶︎ START'; stopStream(); } });
+  btnClear.addEventListener('click', ()=>{ streamEl.innerHTML=''; });
 
-  function stopStream(){
-    running = false; clearTimeout(typerTimer);
-    const last = streamEl.lastElementChild; if (last) last.classList.remove('cursor');
-    pushLine('--- PAUSED ---');
-  }
-
-  // ====== OpenAI ストリーミングに差し替える場合（例） ======
-  /*
-  async function startStream_OpenAI(){
-    if (running) return; running = true;
-    const prompt = document.getElementById('prompt').value.trim();
-    pushLine('--- THOUGHT STREAM ONLINE (OpenAI) ---');
-
-    // ★ 重要：APIキーをフロントに直書きしないこと！
-    // ここでは、あなたのバックエンド（/api/chat など）に
-    // fetch で投げ、サーバ側で OpenAI API を呼び出して
-    // テキストストリームを Server-Sent Events で受け取る設計にしてください。
-
-    const res = await fetch('/api/chat', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-4.1-mini',
-        stream: true,
-        messages: [
-          {role:'system', content:'You are a terse inner monologue. Use fragmented phrases.'},
-          {role:'user', content: `Sensors: ${sensorSummary()}\nHint:${prompt}`}
-        ]
-      })
+  // ====== 物体検出 (COCO-SSD) ======
+  let model=null, detTimer=null;
+  const TYPICAL_HEIGHT_M = { person:1.7, bottle:0.25, cup:0.1, chair:0.9, tv:0.6, laptop:0.3, book:0.22, cell_phone:0.15, mouse:0.04, keyboard:0.45, remote:0.15, backpack:0.45, handbag:0.30, suitcase:0.55, bicycle:1.05, car:1.45, bus:3.0, train:3.6, cat:0.26, dog:0.5 };
+  function focalPx(width, fovDeg){ const fov=fovDeg*Math.PI/180; return (0.5*width)/Math.tan(fov/2); }
+  function estimateDistanceM(box, klass){ const pxH=box[3]; const W=overlay.width; const f=focalPx(W, parseInt(fovEl.value,10)); const Hm=TYPICAL_HEIGHT_M[klass]||0.3; if(pxH<=1) return null; return (Hm*f)/pxH; }
+  function drawDetections(preds){ octx.clearRect(0,0,overlay.width, overlay.height); octx.save(); octx.scale(-1,1); octx.translate(-overlay.width,0); // ミラーに合わせる
+    preds.forEach(p=>{
+      const [x,y,w,h]=p.bbox; const d=estimateDistanceM([x,y,w,h], p.class);
+      // 枠
+      octx.strokeStyle='rgba(57,255,20,0.85)'; octx.lineWidth=2; octx.strokeRect(x,y,w,h);
+      // ラベル
+      const tag=`${p.class} ${(p.score*100|0)}%${d?` ~${d.toFixed(1)}m`:''}`;
+      octx.fillStyle='rgba(0,0,0,0.6)'; octx.fillRect(x, y-18, octx.measureText? (octx.measureText(tag).width+10):120, 18);
+      octx.fillStyle='#39ff14'; octx.font='12px ui-monospace'; octx.fillText(tag, x+4, y-5);
     });
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let acc = '';
-    while(running){
-      const { value, done } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value);
-      acc += chunk;
-      const last = streamEl.lastElementChild;
-      if (!last || !last.classList.contains('cursor')){ pushLine(acc, true); }
-      else { last.textContent = acc; }
-      streamEl.scrollTop = streamEl.scrollHeight;
-    }
-    const last = streamEl.lastElementChild; if (last) last.classList.remove('cursor');
+    octx.restore();
   }
-  */
+  async function detectionLoop(){
+    if(!detectOnEl.checked || !model){ octx.clearRect(0,0,overlay.width, overlay.height); return; }
+    try{ const preds = await model.detect(video); drawDetections(preds); }catch(e){ console.warn(e); }
+    detTimer=setTimeout(detectionLoop, parseInt(detIntEl.value,10));
+  }
 
-  // ====== UI 配線 ======
-  const btnToggle = document.getElementById('btnToggle');
-  const btnClear = document.getElementById('btnClear');
-  btnToggle.addEventListener('click', ()=>{
-    if (!running){ btnToggle.textContent = '⏸ PAUSE'; startStream(); }
-    else { btnToggle.textContent = '▶︎ START'; stopStream(); }
-  });
-  btnClear.addEventListener('click', ()=>{ streamEl.innerHTML = ''; });
-
-  // 初期ゲート
+  // ====== 起動ゲート ======
   document.getElementById('gateStart').addEventListener('click', async ()=>{
-    document.getElementById('gate').style.display = 'none';
+    document.getElementById('gate').style.display='none';
     await startCamera();
     setupSensors();
+    // モデルのロード（必要なときだけ）
+    model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    detectionLoop();
   });
 
-  // iOS 対策: 縦横変更時にビデオ再生が止まることがある
-  window.addEventListener('orientationchange', ()=>{
-    const v = document.getElementById('video');
-    if (v && v.srcObject) v.play().catch(()=>{});
-  });
+  // 設定変更で検出ループ再スケジュール
+  detectOnEl.addEventListener('change', ()=>{ clearTimeout(detTimer); detectionLoop(); });
+  detIntEl.addEventListener('input', ()=>{ clearTimeout(detTimer); detectionLoop(); });
+  fovEl.addEventListener('input', ()=>{ /* 次フレームで距離再計算 */ });
+
+  // iOS 縦横変更対策
+  window.addEventListener('orientationchange', ()=>{ if(video && video.srcObject) video.play().catch(()=>{}); setTimeout(resizeOverlay, 300); });
 </script>
 </body>
 </html>
