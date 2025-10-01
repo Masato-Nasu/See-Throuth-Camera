@@ -3,22 +3,22 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>視覚支援AR：物体・距離・方向 読み上げ（日本語）</title>
-  <meta name="description" content="近い順に日本語で読み上げ。大きな日本語ラベル。信号色の読み上げ。" />
-  <!-- 正しいCDN -->
+  <title>視覚支援AR：方向（時計）、距離、物体を日本語で読み上げ</title>
+  <meta name="description" content="最も近い対象を優先し、時計方向・距離・物体名を日本語で読み上げます。信号機の赤/青も対応。ラベルは大きく日本語で表示し、切れないよう自動調整。" />
+  <!-- 正しいCDN（余計なインラインJSを混ぜない） -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.19.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
   <style>
     :root{ --green:#39ff14; --text:#e8ffe8; }
-    html,body{ margin:0;height:100%;background:#000;color:var(--text);font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden }
+    html,body{ margin:0; height:100%; background:#000; color:var(--text); font-family:ui-monospace,Menlo,Consolas,monospace; overflow:hidden }
     #wrap{ position:fixed; inset:0; }
     video{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover }
     canvas{ position:absolute; inset:0; pointer-events:none }
-    #controls{ position:fixed; left:0; right:0; bottom:0; display:flex; gap:10px; padding:10px; background:transparent; border-top:1px solid rgba(57,255,20,.25) }
+    #controls{ position:fixed; left:0; right:0; bottom:0; display:flex; flex-wrap:wrap; gap:10px; padding:8px calc(10px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left)); background:rgba(0,0,0,0.15); border-top:1px solid rgba(57,255,20,.25); overflow-x:auto; -webkit-overflow-scrolling:touch; z-index:5 }
     .label{ color:var(--green); font-size:12px; margin:0 4px }
-    .range, select, .btn{ border:1px solid rgba(57,255,20,.45); background:rgba(0,0,0,.25); color:var(--text); border-radius:10px; padding:6px 10px }
+    .range, select, .btn{ border:1px solid rgba(57,255,20,.45); background:rgba(0,0,0,.25); color:var(--text); border-radius:10px; padding:6px 10px; white-space:nowrap }
     .btn{ cursor:pointer }
-    #gate{ position:fixed; inset:0; display:grid; place-items:center; background:rgba(0,0,0,.9); color:var(--text); z-index:10; text-align:center; gap:14px }
+    #gate{ position:fixed; inset:0; display:grid; place-items:center; background:rgba(0,0,0,.9); color:var(--text); z-index:10; text-align:center; gap:14px; padding:20px }
     #toast{ position:fixed; left:50%; transform:translateX(-50%); top:10px; padding:8px 12px; border:1px solid rgba(57,255,20,.5); border-radius:10px; background:rgba(0,0,0,.55); color:var(--green); display:none; z-index:20 }
   </style>
 </head>
@@ -60,16 +60,38 @@ async function startCamera(){
   const stream=await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:false });
   v.srcObject=stream; await new Promise(res=> v.onloadedmetadata=res); await v.play(); resize(); addEventListener('resize', resize); toast('📷 カメラ起動');
 }
-function resize(){ ov.width=v.clientWidth||innerWidth; ov.height=v.clientHeight||innerHeight; }
+function resize(){ const w=v.videoWidth||v.clientWidth||innerWidth; const h=v.videoHeight||v.clientHeight||innerHeight; ov.width=w; ov.height=h; }
 
 // ==== 日本語ラベル
-function toJa(cls){ const map={ person:'人', bicycle:'自転車', car:'車', motorcycle:'バイク', bus:'バス', truck:'トラック','traffic light':'信号', bench:'ベンチ', dog:'犬', cat:'猫', chair:'椅子', bottle:'ボトル', cup:'カップ', laptop:'ノートPC', cell_phone:'スマホ', suitcase:'スーツケース'}; return map[cls]||cls; }
-function angleToText(ang){ const d=ang*180/Math.PI; if(d<-15) return '左'; if(d>15) return '右'; return '前方'; }
+function toJa(cls){
+  const map={
+    // 生活全般（COCO-SSD 全クラス対応）
+    person:'人', bicycle:'自転車', car:'車', motorcycle:'バイク', airplane:'飛行機', bus:'バス', train:'電車', truck:'トラック', boat:'ボート',
+    'traffic light':'信号', 'fire hydrant':'消火栓', 'stop sign':'一時停止標識', 'parking meter':'パーキングメーター', bench:'ベンチ',
+    bird:'鳥', cat:'猫', dog:'犬', horse:'馬', sheep:'羊', cow:'牛', elephant:'象', bear:'熊', zebra:'シマウマ', giraffe:'キリン',
+    backpack:'リュック', umbrella:'傘', handbag:'ハンドバッグ', tie:'ネクタイ', suitcase:'スーツケース',
+    frisbee:'フリスビー', skis:'スキー板', snowboard:'スノーボード', 'sports ball':'ボール', kite:'凧', 'baseball bat':'バット', 'baseball glove':'グローブ', skateboard:'スケートボード', surfboard:'サーフボード', 'tennis racket':'テニスラケット',
+    bottle:'ボトル', 'wine glass':'ワイングラス', cup:'カップ', fork:'フォーク', knife:'ナイフ', spoon:'スプーン', bowl:'ボウル',
+    banana:'バナナ', apple:'りんご', sandwich:'サンドイッチ', orange:'オレンジ', broccoli:'ブロッコリー', carrot:'にんじん', 'hot dog':'ホットドッグ', pizza:'ピザ', donut:'ドーナツ', cake:'ケーキ',
+    chair:'椅子', couch:'ソファ', 'potted plant':'観葉植物', bed:'ベッド', 'dining table':'ダイニングテーブル', toilet:'トイレ',
+    tv:'テレビ', laptop:'ノートPC', mouse:'マウス', remote:'リモコン', keyboard:'キーボード', 'cell phone':'スマホ',
+    microwave:'電子レンジ', oven:'オーブン', toaster:'トースター', sink:'流し台', refrigerator:'冷蔵庫',
+    book:'本', clock:'時計', vase:'花瓶', scissors:'はさみ', 'teddy bear':'ぬいぐるみ', 'hair drier':'ドライヤー', toothbrush:'歯ブラシ'
+  };
+  return map[cls]||cls;
+}; return map[cls]||cls; }
+
+// ==== 時計方向テキスト（12時=正面、右回り）
+function angleToClock(ang){ // ang: ラジアン（左負/右正）
+  const deg = ang*180/Math.PI; // 想定範囲: 約 -90°..+90°
+  const off = Math.round(deg/30); // 30°で1時間
+  let hour = (12 + off)%12; if(hour===0) hour=12; return hour+'時方向';
+}
 
 // ==== 距離推定（単眼近似）
-const TYPICAL_H={ person:1.7, bicycle:1.05, car:1.45, bus:3.0, truck:2.5, motorcycle:1.2, dog:0.5, cat:0.26, chair:0.9, bottle:0.25, cup:0.1, laptop:0.3, 'traffic light':0.6 };
+const TYPICAL_H={ person:1.7, bicycle:1.05, car:1.45, bus:3.0, truck:2.5, motorcycle:1.2, dog:0.5, cat:0.26, chair:0.9, bottle:0.25, cup:0.1, laptop:0.3, 'traffic light':0.6, 'wine glass':0.18 };
 function focalPx(w,fovDeg){ const f=fovDeg*Math.PI/180; return (0.5*w)/Math.tan(f/2); }
-function estimateDistPx(bbox, cls){ const h=bbox[3]; const H=TYPICAL_H[cls]||0.3; if(h<=1) return null; const F=focalPx(ov.width, parseInt(document.getElementById('fov').value,10)); return (H*F)/h; }
+function estimateDistPx(bbox, cls){ const h=bbox[3]; const H=TYPICAL_H[cls]||0.3; if(h<=1) return null; const W=(v.videoWidth||ov.width); const F=focalPx(W, parseInt(document.getElementById('fov').value,10)); return (H*F)/h; }
 
 // ==== 信号の色（赤/緑）
 function hsvFromRgb(r,g,b){ r/=255; g/=255; b/=255; const M=Math.max(r,g,b), m=Math.min(r,g,b); let h=0,s=0,v=M, d=M-m; s=M===0?0:d/M; if(M!==m){ switch(M){ case r:h=(g-b)/d+(g<b?6:0);break; case g:h=(b-r)/d+2;break; case b:h=(r-g)/d+4; } h/=6; } return {h:h*360,s,v}; }
@@ -77,51 +99,66 @@ function redOrGreen(imgData){ const d=imgData.data; let rc=0,gc=0; for(let i=0;i
 
 // ==== 音声（割込み無し・クールダウン）
 const synth=window.speechSynthesis; const lastMap=new Map();
-function speak(t){ if(synth.speaking) return; const u=new SpeechSynthesisUtterance(t); u.lang='ja-JP'; synth.speak(u); }
-function sayThrottle(key, text, cd=1800){ const now=performance.now(), last=lastMap.get(key)||0; if(now-last>cd){ lastMap.set(key, now); speak(text); } }
+function speak(t){ if(synth.speaking) return; const u=new SpeechSynthesisUtterance(t); u.lang='ja-JP'; u.rate=1; synth.speak(u); }
+function sayThrottle(key, text, cd=1600){ const now=performance.now(), last=lastMap.get(key)||0; if(now-last>cd){ lastMap.set(key, now); speak(text); } }
 
 function drawDetections(preds){
   ctx.clearRect(0,0,ov.width,ov.height);
-  const W=ov.width; const fov=parseInt(document.getElementById('fov').value,10)*Math.PI/180;
+  const Wpx=(v.videoWidth||ov.width); const fov=parseInt(document.getElementById('fov').value,10)*Math.PI/180;
   const K=parseInt(document.getElementById('topK').value,10)||1;
   const mode=document.getElementById('announceMode').value;
   const allow=(cls)=>{ if(mode==='all') return true; const pv=['person','car','bicycle','bus','motorcycle','truck']; const imp=['person','car','bicycle','bus']; return mode==='people_vehicles'? pv.includes(cls) : imp.includes(cls); };
 
   const minScore=0.55;
-  const items = preds.filter(p=>p.score>=minScore).map(p=>{ const [x,y,w,h]=p.bbox; const cx=x+w/2; const ang=((cx-W/2)/(W/2))*(fov/2); const dist=estimateDistPx(p.bbox,p.class); return {...p, ang, dist}; });
-  items.sort((a,b)=>{ const da=a.dist??1e9, db=b.dist??1e9; return da-db; }); // 近い順
+  const items = preds.filter(p=>p.score>=minScore).map(p=>{ const [x,y,w,h]=p.bbox; const cx=x+w/2; const ang=((cx-Wpx/2)/(Wpx/2))*(fov/2); const dist=estimateDistPx(p.bbox,p.class); return {...p, ang, dist}; });
+  // 近い順 + 同距離ならスコア高い順
+  items.sort((a,b)=>{ const da=a.dist??1e9, db=b.dist??1e9; if(da!==db) return da-db; return b.score-a.score; });
 
   let said=0;
   items.forEach(p=>{
-    const [x,y,w,h]=p.bbox; const yLabel=Math.max(28,y);
+    const [x,y,w,h]=p.bbox;
+    // ラベル位置をキャンバス内にクランプ（切れないように）
+    const tagDir=angleToClock(p.ang); const dtxt = p.dist? ` ${p.dist.toFixed(1)}m` : '';
+    const tagText = `${tagDir} ${toJa(p.class)}${dtxt}`;
+    ctx.font='600 22px ui-monospace,Menlo,Consolas,monospace';
+    const textW=ctx.measureText(tagText).width+16; const padH=28;
+    let lx = Math.min(Math.max(x, 4), ov.width - textW - 4);
+    let ly = (y>=32)? y-4 : y+h+padH+4; // 上に置けなければ下に
+    if(ly+(-padH) < 0) ly = y+h+padH+4; // それでも無理なら下
+
     // 枠
     ctx.strokeStyle='rgba(57,255,20,.95)'; ctx.lineWidth=3; ctx.strokeRect(x,y,w,h);
-    // 日本語・大きめラベル（距離+方向）
-    const dir=angleToText(p.ang); const dtxt = p.dist? ` ${p.dist.toFixed(1)}m` : '';
-    const tag = `${toJa(p.class)}${dtxt} ${dir}`;
-    ctx.font='600 22px ui-monospace,Menlo,Consolas,monospace';
-    const tw=ctx.measureText(tag).width+16; ctx.fillStyle='rgba(0,0,0,.7)'; ctx.fillRect(x, yLabel-28, tw, 28);
-    ctx.fillStyle='#39ff14'; ctx.fillText(tag, x+8, yLabel-7);
+    // 日本語・大きめラベル（時計方向＋物体＋距離）
+    ctx.fillStyle='rgba(0,0,0,.7)'; ctx.fillRect(lx, ly-padH, textW, padH);
+    ctx.fillStyle='#39ff14'; ctx.fillText(tagText, lx+8, ly-7);
 
-    // 信号読み上げ（赤/青）
+    // 信号読み上げ（赤/青＋距離＋時計方向）
     if(p.class==='traffic light'){
-      try{ const crop=ctx.getImageData(x,y,w,h); const col=redOrGreen(crop); if(col){ const msg = col==='red'? '信号は赤です。止まってください。' : '信号は青です。渡れます。'; const withD = p.dist? `${msg} およそ${p.dist.toFixed(1)}メートル前。` : msg; sayThrottle('tl_'+col, withD, 2500); } }catch(e){}
+      try{ const crop=ctx.getImageData(x,y,w,h); const col=redOrGreen(crop); if(col){ const msg = col==='red'? '信号は赤です。止まってください。' : '信号は青です。渡れます。'; const withD = `${angleToClock(p.ang)}、${p.dist? (Math.max(0.5,p.dist).toFixed(1)+'メートル、') : ''}${msg}`; sayThrottle('tl_'+col, withD, 2400); } }catch(e){}
     }
 
     // 近い順に上位K件だけ読み上げ（対象クラスのみ）
     if(said<K && allow(p.class)){
       const distSay = p.dist? `${Math.max(0.5,p.dist).toFixed(1)}メートル` : '';
-      const t = `${dir}${distSay? '、'+distSay: ''}、${toJa(p.class)}`;
-      sayThrottle(`obj_${p.class}_${dir}`, t, 1500);
+      // 危険域（至近距離）なら語彙を増やす
+      const hazard = (p.class==='person'||p.class==='car'||p.class==='bicycle'||p.class==='bus') && (p.dist && p.dist < 1.2);
+      const extra = hazard ? ' 注意、接近しています。' : '';
+      const t = `${angleToClock(p.ang)}、${distSay? distSay+'、' : ''}${toJa(p.class)}。${extra}`;
+      sayThrottle(`obj_${p.class}_${tagDir}`, t, hazard? 1300: 1700);
       said++;
     }
   });
 }
 
-async function detLoop(){ if(!document.getElementById('detectOn').checked || !model){ ctx.clearRect(0,0,ov.width,ov.height); return; } try{ const preds=await model.detect(v); drawDetections(preds); }catch(e){ console.warn(e); } detTimer=setTimeout(detLoop, 700); }
+async function detLoop(){ if(!document.getElementById('detectOn').checked || !model){ ctx.clearRect(0,0,ov.width,ov.height); return; } try{ const preds=await model.detect(v); drawDetections(preds); }catch(e){ console.warn(e); } detTimer=setTimeout(detLoop, 600); }
+
+// FOVスライダー：即時反映＆簡易通知
+const fovEl=document.getElementById('fov');
+fovEl.addEventListener('input',()=>{ toast('FOV '+fovEl.value+'°'); sayThrottle('fov_notice','距離補正を更新しました。',1200); if(model) { model.detect(v).then(drawDetections).catch(()=>{}); } });
 
 // ==== Boot
-document.getElementById('gateStart').onclick = async()=>{ document.getElementById('gate').style.display='none'; try{ await startCamera(); toast('📦 モデル読込中…'); model=await cocoSsd.load({base:'lite_mobilenet_v2'}); toast('✅ 準備完了'); detLoop(); }catch(e){ toast('❌ 起動失敗: '+e.message); } };
+const gateBtn=document.getElementById('gateStart');
+gateBtn.onclick = async()=>{ document.getElementById('gate').style.display='none'; try{ await startCamera(); toast('📦 モデル読込中…'); model=await cocoSsd.load({base:'lite_mobilenet_v2'}); toast('✅ 準備完了'); detLoop(); }catch(e){ toast('❌ 起動失敗: '+e.message); } };
 </script>
 </body>
 </html>
