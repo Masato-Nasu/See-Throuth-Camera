@@ -1,237 +1,203 @@
 <!doctype html>
 <html lang="ja">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>視覚支援AR：緑HUD + 物体検出 + 黄線ガイド + 信号色</title>
-  <meta name="description" content="視覚支援モード（音声案内・ビープ・振動）つき実験的ARアプリ。黄線ガイド/信号色推定対応。" />
-  <!-- TF.js & COCO-SSD (物体検出) -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.19.0"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3"></script>
-  <style>
-    :root{ --bg:#000; --grid:rgba(0,255,128,.12); --green:#39ff14; --text:#d7ffd7; }
-    html,body{ margin:0;height:100%;background:var(--bg);color:var(--text);font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden; }
-    #camWrap{ position:fixed; inset:0; overflow:hidden; }
-    #video{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; filter:saturate(1.1) contrast(1.05) brightness(1.05);  }
-    #overlay{ position:absolute; inset:0; pointer-events:none; }
-    #hud{ position:fixed; inset:0; pointer-events:none; }
-    .panel{ position:absolute; left:50%; transform:translateX(-50%); bottom:6vh; width:min(1000px,92vw); height:56vh; background:linear-gradient(180deg,rgba(0,0,0,.15),rgba(0,0,0,.35)); border:1px solid rgba(57,255,20,.35); border-radius:16px; box-shadow:0 0 24px rgba(57,255,20,.12), inset 0 0 40px rgba(57,255,20,.06); backdrop-filter:blur(6px) saturate(1.1); -webkit-backdrop-filter:blur(6px) saturate(1.1); overflow:hidden; }
-    .panel::before{ content:""; position:absolute; inset:0; background:repeating-linear-gradient(to bottom, rgba(0,255,128,.05), rgba(0,255,128,.05) 2px, transparent 2px, transparent 6px); mix-blend-mode:screen; animation:scan 5s linear infinite; }
-    @keyframes scan{ from{transform:translateY(-10%)} to{transform:translateY(10%)} }
-    .panel::after{ content:""; position:absolute; inset:0; background:linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size:32px 32px, 32px 32px; mask-image:linear-gradient(to top, transparent, rgba(0,0,0,.6) 30%, rgba(0,0,0,.9)); }
-    .title{ position:absolute; inset:0 0 auto 0; height:42px; background:linear-gradient(90deg, rgba(57,255,20,.2), rgba(57,255,20,0), rgba(57,255,20,.2)); border-bottom:1px solid rgba(57,255,20,.35); display:flex; align-items:center; padding:0 16px; font-weight:600; letter-spacing:.06em; color:var(--green); text-shadow:0 0 8px rgba(57,255,20,.8), 0 0 18px rgba(57,255,20,.4); }
-    #stream{ position:absolute; top:50px; bottom:98px; left:0; right:0; padding:14px 16px 24px; overflow:hidden; font-size:clamp(12px,1.9vw,16px); line-height:1.6; }
-    .line{ opacity:.95; margin:2px 0; white-space:pre-wrap; word-break:break-word; text-shadow:0 0 10px rgba(57,255,20,.55), 0 0 28px rgba(57,255,20,.35); }
-    .cursor::after{ content:"▌"; animation:blink 1s steps(1,start) infinite; color:var(--green) }
-    @keyframes blink{ 50%{opacity:0} }
-    #controls{ position:absolute; inset:auto 0 0 0; height:98px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:8px 10px; background:linear-gradient(0deg, rgba(0,0,0,.55), rgba(0,0,0,.15)); border-top:1px solid rgba(57,255,20,.25); pointer-events:auto; }
-    .btn{ border:1px solid rgba(57,255,20,.55); background:rgba(0,0,0,.25); color:var(--green); padding:8px 12px; border-radius:10px; font-weight:600; letter-spacing:.04em; cursor:pointer; box-shadow:0 0 12px rgba(57,255,20,.25) inset; }
-    .input,.range,select{ border:1px solid rgba(57,255,20,.35); background:rgba(0,0,0,.25); color:var(--text); border-radius:8px; padding:6px 10px; }
-    .label{ color:var(--green); font-size:12px; margin:0 6px 0 4px; opacity:.9; }
-    #gate{ position:fixed; inset:0; display:grid; place-items:center; background:radial-gradient(1200px 600px at center, rgba(0,0,0,.6), rgba(0,0,0,.92)); color:var(--text); z-index:10; text-align:center; padding:24px; }
-    #gate .start{ font-size:18px; padding:12px 20px; border-radius:14px; cursor:pointer; border:1px solid rgba(57,255,20,.6); background:rgba(0,0,0,.35); color:var(--green); text-shadow:0 0 10px rgba(57,255,20,.9); }
-    @media (max-width:640px){ .panel{ height:60vh } #controls{ height:108px } #stream{ bottom:108px } }
-  </style>
-</head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>A11y AR — OBJECTS / RANGE / TRAFFIC / YELLOW or GAP GUIDE</title>
+<meta name="description" content="視覚支援モード（音声案内・ビープ・振動）つき実験的ARアプリ。黄線ガイド/信号色推定対応。">
+<!-- 正しいCDNパス -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.19.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<style>
+  :root{ --grid:rgba(0,255,128,.12); --green:#39ff14; --text:#d7ffd7; }
+  html,body{ margin:0; height:100%; background:#000; color:var(--text); font:14px ui-monospace,monospace; overflow:hidden }
+  #camWrap{ position:fixed; inset:0; overflow:hidden }
+  #v{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover } /* 反転なし */
+  #ov{ position:absolute; inset:0; pointer-events:none }
+  #toast{ position:fixed; left:50%; transform:translateX(-50%); top:10px; padding:8px 12px; border:1px solid rgba(57,255,20,.5); border-radius:10px; background:rgba(0,0,0,.55); color:#39ff14; z-index:20; display:none }
+  #hud{ position:fixed; inset:0; pointer-events:none }
+  .panel{ position:absolute; left:50%; transform:translateX(-50%); bottom:6vh; width:min(1000px,92vw); height:56vh;
+          background:linear-gradient(180deg,rgba(0,0,0,.15),rgba(0,0,0,.35)); border:1px solid rgba(57,255,20,.35); border-radius:16px; overflow:hidden;
+          box-shadow:0 0 24px rgba(57,255,20,.12), inset 0 0 40px rgba(57,255,20,.06); backdrop-filter:blur(6px) saturate(1.1) }
+  .panel::before{ content:""; position:absolute; inset:0; background:repeating-linear-gradient(to bottom, rgba(0,255,128,.05), rgba(0,255,128,.05) 2px, transparent 2px, transparent 6px); mix-blend-mode:screen; animation:scan 5s linear infinite }
+  @keyframes scan{ from{transform:translateY(-10%)} to{transform:translateY(10%)} }
+  .panel::after{ content:""; position:absolute; inset:0; background:linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size:32px 32px, 32px 32px; mask-image:linear-gradient(to top, transparent, rgba(0,0,0,.6) 30%, rgba(0,0,0,.9)) }
+  .title{ position:absolute; inset:0 0 auto 0; height:42px; background:linear-gradient(90deg, rgba(57,255,20,.2), rgba(57,255,20,0), rgba(57,255,20,.2));
+          border-bottom:1px solid rgba(57,255,20,.35); display:flex; align-items:center; padding:0 16px; font-weight:600; letter-spacing:.06em; color:var(--green) }
+  #controls{ position:absolute; inset:auto 0 0 0; height:98px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:8px 10px;
+             background:linear-gradient(0deg, rgba(0,0,0,.55), rgba(0,0,0,.15)); border-top:1px solid rgba(57,255,20,.25); pointer-events:auto }
+  .btn{ border:1px solid rgba(57,255,20,.55); background:rgba(0,0,0,.25); color:var(--green); padding:8px 12px; border-radius:10px; cursor:pointer }
+  .input,.range,select{ border:1px solid rgba(57,255,20,.35); background:rgba(0,0,0,.25); color:var(--text); border-radius:8px; padding:6px 10px }
+  .label{ color:var(--green); font-size:12px; margin:0 6px 0 4px; opacity:.9 }
+  #gate{ position:fixed; inset:0; display:grid; place-items:center; background:radial-gradient(1200px 600px at center, rgba(0,0,0,.6), rgba(0,0,0,.92)); color:var(--text); z-index:10; text-align:center; padding:24px }
+  #gate .start{ font-size:18px; padding:12px 20px; border-radius:14px; border:1px solid rgba(57,255,20,.6); background:rgba(0,0,0,.35); color:var(--green) }
+</style>
 <body>
-  <div id="toast" style="position:fixed;left:50%;transform:translateX(-50%);top:10px;padding:8px 12px;border:1px solid rgba(57,255,20,.5);border-radius:10px;background:rgba(0,0,0,.55);color:#39ff14;font:12px ui-monospace;z-index:20;display:none"></div>
+<div id="toast"></div>
 
-  <div id="camWrap">
-    <video id="video" autoplay playsinline muted></video>
-    <canvas id="overlay"></canvas>
-  </div>
+<div id="camWrap">
+  <video id="v" autoplay playsinline muted></video>
+  <canvas id="ov"></canvas>
+</div>
 
-  <div id="hud">
-    <div class="panel" id="panel">
-      <div class="title">A11y AR — OBJECTS / RANGE / TRAFFIC / YELLOW or GAP GUIDE</div>
-      <!-- 思考ストリーム削除: ナビ専用UIに簡素化 -->
-      <div id="controls">
-        <button class="btn" id="btnToggle">▶︎ START</button>
-        <button class="btn" id="btnClear">CLEAR</button>
-        <span class="label">Detect</span>
-        <input id="detectOn" type="checkbox" checked aria-label="物体検出オン" />
-        <span class="label">FOV°</span>
-        <input class="range" id="fov" type="range" min="45" max="85" value="60" />
-        <span class="label">Intvl(ms)</span>
-        <input class="range" id="detInt" type="range" min="250" max="1800" value="700" />
-        <span class="label">A11y</span>
-        <input id="a11yOn" type="checkbox" aria-label="視覚支援モード" checked />
-        <span class="label">Lang</span>
-        <select id="lang" aria-label="言語"><option value="ja">日本語</option><option value="en">English</option></select>
-        <span class="label">Cooldown s</span>
-        <input class="range" id="cooldown" type="range" min="1" max="8" value="2" />
-        <span class="label">Beep</span>
-        <input id="beepOn" type="checkbox" checked aria-label="ビープ音オン" />
-        <span class="label">Vibe</span>
-        <input id="vibeOn" type="checkbox" checked aria-label="バイブレーションオン" />
-        <span class="label">Guide</span>
-        <select id="guideMode" aria-label="ガイドモード">
-          <option value="yellow_first">黄線優先</option>
-          <option value="gap_only">ギャップ誘導</option>
-        </select>
-      </div>
+<div id="hud">
+  <div class="panel">
+    <div class="title">A11y AR — OBJECTS / RANGE / TRAFFIC / YELLOW or GAP GUIDE</div>
+    <div id="controls">
+      <button class="btn" id="start">▶︎ START</button>
+      <span class="label">Detect</span><input id="detectOn" type="checkbox" checked aria-label="物体検出オン" />
+      <span class="label">FOV°</span><input class="range" id="fov" type="range" min="45" max="85" value="60" />
+      <span class="label">Intvl(ms)</span><input class="range" id="detInt" type="range" min="250" max="1800" value="700" />
+      <span class="label">Guide</span><select id="guideMode"><option value="yellow_first">黄線優先</option><option value="gap_only">ギャップのみ</option></select>
+      <span class="label">A11y</span><input id="a11yOn" type="checkbox" checked />
+      <span class="label">Lang</span><select id="lang"><option value="ja">日本語</option><option value="en">English</option></select>
+      <span class="label">Cooldown s</span><input class="range" id="cooldown" type="range" min="1" max="8" value="2" />
+      <span class="label">Beep</span><input id="beepOn" type="checkbox" checked />
+      <span class="label">Vibe</span><input id="vibeOn" type="checkbox" checked />
     </div>
   </div>
+</div>
 
-  <div id="gate">
-    <div>
-      <h2 style="margin:0 0 10px 0;color:#39ff14;text-shadow:0 0 16px rgba(57,255,20,.9)">カメラへのアクセスが必要です</h2>
-      <p style="margin:0 0 16px 0">「開始」を押すと、背面カメラ映像にネオングリーンHUD、黄線ガイド、信号推定を重ねます。</p>
-      <button class="start" id="gateStart">開始 / START</button>
-      <small>※ HTTPS必須。信号/距離は単眼の概算です。</small>
-    </div>
+<div id="gate">
+  <div>
+    <h2 style="margin:0 0 10px 0;color:#39ff14">カメラへのアクセスが必要です</h2>
+    <p style="margin:0 0 16px 0">「開始」を押すと、背面カメラにHUD/ガイドを重ねます（HTTPS必須）。</p>
+    <button class="start" id="gateStart">開始 / START</button>
   </div>
+</div>
 
 <script>
-  // ===== util =====
-  function showToast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(showToast._timer); showToast._timer=setTimeout(()=>{ t.style.display='none'; }, 2500); }
+const v = document.getElementById('v');
+const ov = document.getElementById('ov');
+const ctx = ov.getContext('2d');
+const toast = (m)=>{ const t=document.getElementById('toast'); t.textContent=m; t.style.display='block'; clearTimeout(toast._t); toast._t=setTimeout(()=>t.style.display='none', 2500); };
 
-  // ===== camera & canvas =====
-  const video = document.getElementById('video');
-  const overlay = document.getElementById('overlay');
-  const octx = overlay.getContext('2d');
+async function startCamera(){
+  if(!window.isSecureContext){ toast('⚠ HTTPSが必要です'); throw new Error('Insecure'); }
+  v.setAttribute('playsinline','');
+  const s = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:false });
+  v.srcObject = s; await new Promise(res => v.onloadedmetadata = res); await v.play();
+  resize(); window.addEventListener('resize', resize);
+  toast('📷 カメラ起動');
+}
+function resize(){ ov.width = v.clientWidth || innerWidth; ov.height = v.clientHeight || innerHeight; }
 
-  async function startCamera(){
-    if (!window.isSecureContext) { showToast('⚠ HTTPSが必要です'); throw new Error('Insecure context'); }
-    video.setAttribute('playsinline','');
-    try{
-      const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:false });
-      video.srcObject = stream;
-      await new Promise(res=> video.onloadedmetadata = res);
-      await video.play();
-      resizeOverlay();
-      window.addEventListener('resize', resizeOverlay);
-      showToast('📷 カメラ起動');
-    }catch(err){ console.error(err); showToast('❌ カメラ失敗: '+err.message); alert('カメラにアクセスできませんでした:
-'+err.name+': '+err.message); throw err; }
-  }
-  function resizeOverlay(){ overlay.width = video.clientWidth || window.innerWidth; overlay.height = video.clientHeight || window.innerHeight; }
+// ==== TFJS / COCO-SSD ====
+let model=null, detTimer=null, lastDetections=null;
+const detectOnEl = document.getElementById('detectOn');
+const fovEl = document.getElementById('fov');
+const detIntEl = document.getElementById('detInt');
+const guideModeEl = document.getElementById('guideMode');
 
-  // ===== sensors =====
-  const sensors = { motion:null, orientation:null, geo:null };
-  function setupSensors(){
-    if (window.DeviceMotionEvent){ window.addEventListener('devicemotion', e=>{ sensors.motion={ ax:e.accelerationIncludingGravity?.x??0, ay:e.accelerationIncludingGravity?.y??0, az:e.accelerationIncludingGravity?.z??0 }; }, {passive:true}); }
-    if (window.DeviceOrientationEvent){ window.addEventListener('deviceorientation', e=>{ sensors.orientation={ alpha:e.alpha, beta:e.beta, gamma:e.gamma }; }, {passive:true}); }
-    if (navigator.geolocation){ navigator.geolocation.getCurrentPosition(pos=>{ sensors.geo={ lat:pos.coords.latitude.toFixed(5), lon:pos.coords.longitude.toFixed(5) }; }, ()=>{}, { maximumAge:60000, timeout:3000 }); }
-  }
-  function sensorSummary(){ const p=[]; if (sensors.geo) p.push(`GPS ${sensors.geo.lat},${sensors.geo.lon}`); if (sensors.motion) p.push(`acc x:${sensors.motion.ax?.toFixed(1)} y:${sensors.motion.ay?.toFixed(1)} z:${sensors.motion.az?.toFixed(1)}`); if (sensors.orientation) p.push(`ori α:${sensors.orientation.alpha?.toFixed(0)} β:${sensors.orientation.beta?.toFixed(0)} γ:${sensors.orientation.gamma?.toFixed(0)}`); return p.join(' | '); }
+const TYPICAL_H = { person:1.7, bottle:0.25, cup:0.1, chair:0.9, tv:0.6, laptop:0.3, book:0.22, cell_phone:0.15, mouse:0.04, keyboard:0.45, remote:0.15, backpack:0.45, handbag:0.30, suitcase:0.55, bicycle:1.05, car:1.45, bus:3.0, train:3.6, cat:0.26, dog:0.5, 'traffic light':0.6 };
+function focalPx(w, fovDeg){ const f=fovDeg*Math.PI/180; return (0.5*w)/Math.tan(f/2); }
+function estimateDist([x,y,w,h], klass){ const pxH=h; const F=focalPx(ov.width, parseInt(fovEl.value,10)); const H=TYPICAL_H[klass]||0.3; if(pxH<=1) return null; return (H*F)/pxH; }
 
-  // ===== object detection & traffic light color ===== & traffic light color =====
-  let model=null, detTimer=null;
-  const detectOnEl = document.getElementById('detectOn');
-  const fovEl = document.getElementById('fov');
-  const detIntEl = document.getElementById('detInt');
-  const TYPICAL_HEIGHT_M = { person:1.7, bottle:0.25, cup:0.1, chair:0.9, tv:0.6, laptop:0.3, book:0.22, cell_phone:0.15, mouse:0.04, keyboard:0.45, remote:0.15, backpack:0.45, handbag:0.30, suitcase:0.55, bicycle:1.05, car:1.45, bus:3.0, train:3.6, cat:0.26, dog:0.5, 'traffic light':0.6 };
-  function focalPx(width, fovDeg){ const fov=fovDeg*Math.PI/180; return (0.5*width)/Math.tan(fov/2); }
-  function estimateDistanceM(box, klass){ const pxH=box[3]; const W=overlay.width; const f=focalPx(W, parseInt(fovEl.value,10)); const Hm=TYPICAL_HEIGHT_M[klass]||0.3; if(pxH<=1) return null; return (Hm*f)/pxH; }
-  function hsvFromRgb(r,g,b){ r/=255; g/=255; b/=255; const max=Math.max(r,g,b), min=Math.min(r,g,b); let h=0,s=0,v=max; const d=max-min; s=max===0?0:d/max; if(max!==min){ switch(max){ case r: h=(g-b)/d+(g<b?6:0); break; case g: h=(b-r)/d+2; break; case b: h=(r-g)/d+4; break; } h/=6; } return {h:h*360,s,v}; }
-  function isRedGreenFromCrop(imgData){ const data=imgData.data; let rc=0,gc=0; for(let i=0;i<data.length;i+=4){ const h=hsvFromRgb(data[i],data[i+1],data[i+2]); if(h.v<0.2||h.s<0.35) continue; if(h.h<25||h.h>335) rc++; else if(h.h>75&&h.h<170) gc++; } if(rc+gc<50) return null; return rc>gc? 'red':'green'; }
-  function drawDetections(preds){
-    octx.clearRect(0,0,overlay.width, overlay.height);
-    // 描画の基準はミラー無し
-    preds.forEach(p=>{
-      const [x,y,w,h]=p.bbox; const cx=x+w/2; const cy=y+h/2;
-      const d=estimateDistanceM([x,y,w,h], p.class);
-      // 方向推定（水平FOVから角度）
-      const W=overlay.width; const fov=parseInt(fovEl.value,10)*Math.PI/180; const dx=(cx - W/2); const ang = (dx/(W/2))*(fov/2); // 左負,右正（ラジアン）
-      // ラベル
-      let extra='';
-      if(p.class==='traffic light'){
-        try{ const crop=octx.getImageData(x,y,w,h); const col=isRedGreenFromCrop(crop); if(col){ extra=` ${col.toUpperCase()}`; if(a11yOnEl.checked) announceTraffic(col,d); } }catch(e){}
-      }
-      // 枠
-      octx.strokeStyle='rgba(57,255,20,.85)'; octx.lineWidth=2; octx.strokeRect(x,y,w,h);
-      const dirTxt = angleToText(ang);
-      const tag = `${p.class} ${(p.score*100|0)}%${d?` ~${d.toFixed(1)}m`:''} ${dirTxt}${extra}`;
-      octx.fillStyle='rgba(0,0,0,.6)'; octx.font='12px ui-monospace'; const tw=octx.measureText(tag).width+10; octx.fillRect(x, y-18, tw, 18);
-      octx.fillStyle='#39ff14'; octx.fillText(tag, x+4, y-5);
-      // アナウンス（抑制付き）
-      maybeAnnounceObject(p.class, d, ang);
-    });
-  }{ octx.clearRect(0,0,overlay.width, overlay.height); octx.save(); octx.scale(-1,1); octx.translate(-overlay.width,0); preds.forEach(p=>{ const [x,y,w,h]=p.bbox; const d=estimateDistanceM([x,y,w,h], p.class); let extra=''; if(p.class==='traffic light'){ try{ const crop=octx.getImageData(x,y,w,h); const col=isRedGreenFromCrop(crop); if(col){ extra=` ${col.toUpperCase()}`; if(a11yOnEl.checked) announceTraffic(col,d); } }catch(e){} } octx.strokeStyle='rgba(57,255,20,.85)'; octx.lineWidth=2; octx.strokeRect(x,y,w,h); const tag=`${p.class} ${(p.score*100|0)}%${d?` ~${d.toFixed(1)}m`:''}${extra}`; octx.fillStyle='rgba(0,0,0,.6)'; const tw = (octx.measureText(tag).width||120)+10; octx.fillRect(x, y-18, tw, 18); octx.fillStyle='#39ff14'; octx.font='12px ui-monospace'; octx.fillText(tag, x+4, y-5); }); octx.restore(); }
-  async function detectionLoop(){ if(!detectOnEl.checked || !model){ octx.clearRect(0,0,overlay.width, overlay.height); return; } try{ const preds = await model.detect(video); drawDetections(preds); }catch(e){ console.warn(e); } detTimer=setTimeout(detectionLoop, parseInt(detIntEl.value,10)); }
+// HSV helpers
+function hsvFromRgb(r,g,b){ r/=255; g/=255; b/=255; const M=Math.max(r,g,b), m=Math.min(r,g,b); let h=0,s=0,v=M, d=M-m; s=M===0?0:d/M;
+  if(M!==m){ switch(M){ case r: h=(g-b)/d+(g<b?6:0); break; case g: h=(b-r)/d+2; break; case b: h=(r-g)/d+4; break; } h/=6; }
+  return {h:h*360,s,v};
+}
+function redOrGreen(imgData){ const d=imgData.data; let rc=0,gc=0; for(let i=0;i<d.length;i+=4){ const h=hsvFromRgb(d[i],d[i+1],d[i+2]); if(h.v<0.2||h.s<0.35) continue; if(h.h<25||h.h>335) rc++; else if(h.h>75&&h.h<170) gc++; }
+  if(rc+gc<50) return null; return rc>gc?'red':'green';
+}
 
-  // ===== yellow line (guide) + gap-based fallback =====
-  let yellowTimer=null; const proc=document.createElement('canvas'), pctx=proc.getContext('2d');
-  function detectYellowPath(){
-    const W=overlay.width, H=overlay.height; if(W*H===0){ yellowTimer=setTimeout(detectYellowPath,200); return; }
-    proc.width=W; proc.height=H; pctx.drawImage(video,0,0,W,H);
-    const roiH=Math.floor(H*0.5); const img=pctx.getImageData(0,H-roiH,W,roiH); const data=img.data;
-    const rowSamples=[]; let yellowCount=0;
-    for(let y=0;y<roiH;y+=3){ let rowSum=0,rowCnt=0; for(let x=0;x<W;x+=2){ const i=((y*W)+x)*4; const {h,s,v}=hsvFromRgb(data[i],data[i+1],data[i+2]); if(v>0.35 && s>0.35 && h>20 && h<65){ rowSum+=x; rowCnt++; yellowCount++; } } if(rowCnt>8) rowSamples.push({y, cx: rowSum/rowCnt}); }
-    octx.save();
-    const useYellow = (guideModeEl.value==='yellow_first' && yellowCount>150);
-    if(useYellow){
-      // 黄線ガイド描画
-      octx.strokeStyle='rgba(255,255,0,.9)'; octx.lineWidth=3; octx.setLineDash([8,6]); octx.beginPath(); let started=false; rowSamples.forEach(r=>{ const yy=H-roiH+r.y; const xx=r.cx; if(!isFinite(xx)) return; if(!started){ octx.moveTo(xx,yy); started=true; } else { octx.lineTo(xx,yy);} }); octx.stroke();
-      if(rowSamples.length>4){ const head=rowSamples[Math.max(0,rowSamples.length-8)]; const tail=rowSamples[rowSamples.length-1]; const ang=Math.atan2((H-roiH+tail.y)-(H-roiH+head.y), tail.cx-head.cx); drawArrow(tail.cx, H-roiH+tail.y, ang); guideTurn(ang); }
-    } else {
-      // Fallback: 物体検出のバウンディングボックスから下半分の障害マップを作り、最も広いギャップを通路と見なす
-      const columns = 64; const colW = W/columns; const occ = new Array(columns).fill(0);
-      (lastDetections||[]).forEach(p=>{ const [x,y,w,h]=p.bbox; const by=y+h; if(by < H*0.5) return; const start=Math.max(0, Math.floor(x/colW)); const end=Math.min(columns-1, Math.floor((x+w)/colW)); for(let c=start;c<=end;c++) occ[c]=1; });
-      let bestLen=0,bestStart=0; let cur=0,curStart=0; for(let c=0;c<columns;c++){ if(occ[c]===0){ if(cur===0) curStart=c; cur++; if(cur>bestLen){ bestLen=cur; bestStart=curStart; } } else { cur=0; } }
-      const gapCx = (bestStart + bestLen/2)*colW; const gapW = bestLen*colW;
-      // 可視化
-      octx.fillStyle='rgba(0,255,128,0.15)'; octx.fillRect(bestStart*colW, H-roiH, gapW, roiH);
-      octx.strokeStyle='rgba(0,255,128,0.9)'; octx.lineWidth=3; octx.setLineDash([10,6]); octx.beginPath(); octx.moveTo(gapCx, H-roiH); octx.lineTo(gapCx, H); octx.stroke();
-      const ang = Math.atan2( (H - (H-roiH)), (gapCx - W/2) ); drawArrow(gapCx, H-10, ang);
-      guideTurn(ang);
-    }
-    octx.restore();
-    yellowTimer=setTimeout(detectYellowPath, 120);
-  } }
-  function drawArrow(x,y,ang){ const L=36; octx.save(); octx.translate(x,y); octx.rotate(ang); octx.fillStyle='rgba(255,255,0,.95)'; octx.beginPath(); octx.moveTo(0,0); octx.lineTo(-L,10); octx.lineTo(-L,-10); octx.closePath(); octx.fill(); octx.restore(); }
-
-  // ===== accessibility: speech / beep / vibration =====
-  const a11yOnEl = document.getElementById('a11yOn');
-  const langEl = document.getElementById('lang');
-  const cooldownEl = document.getElementById('cooldown');
-  const beepOnEl = document.getElementById('beepOn');
-  const vibeOnEl = document.getElementById('vibeOn');
-  const guideModeEl = document.getElementById('guideMode');
-  const synth = window.speechSynthesis;
-  let lastSpeakAt=0; const spokeMap = new Map();
-  function speak(text){ if(!a11yOnEl.checked) return; const u=new SpeechSynthesisUtterance(text); u.lang=(langEl.value==='ja')?'ja-JP':'en-US'; u.rate=1; try{synth.cancel();}catch(_){} synth.speak(u); }
-  function speakThrottled(key, text){ const now=performance.now(); const cd=parseInt(cooldownEl.value,10)*1000; const last=spokeMap.get(key)||0; if(now-last>cd){ spokeMap.set(key,now); speak(text); if(vibeOnEl.checked && navigator.vibrate) navigator.vibrate(120); } }
-  function beep(f){ try{ const ctx=new (window.AudioContext||window.webkitAudioContext)(); const o=ctx.createOscillator(); const g=ctx.createGain(); o.type='sine'; o.frequency.value=f; o.connect(g); g.connect(ctx.destination); g.gain.setValueAtTime(0.0001, ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime+0.02); o.start(); o.stop(ctx.currentTime+0.12); }catch(e){} }
-  function beepFeedback(dir){ if(!beepOnEl.checked) return; const f = dir==='straight'?600 : dir==='left'? 450 : 800; beep(f); }
-  function angleToText(ang){ const deg=ang*180/Math.PI; if(deg<-15) return (langEl.value==='ja')?'左':'left'; if(deg>15) return (langEl.value==='ja')?'右':'right'; return (langEl.value==='ja')?'前方':'ahead'; }
-  function guideTurn(ang){ if(!a11yOnEl.checked) return; const deg=ang*180/Math.PI; let dir='straight'; if(deg<-10) dir='left'; else if(deg>10) dir='right'; const msg = (langEl.value==='ja') ? (dir==='straight'?'まっすぐ': dir==='left'?'左へ':'右へ') : (dir==='straight'?'straight': dir==='left'?'left':'right'); speakThrottled('guide', msg); beepFeedback(dir); }
-  function announceTraffic(color, dist){ const key='traffic_'+color; let t=''; if(langEl.value==='ja'){ t = color==='red' ? '信号は赤です。止まってください。' : '信号は青です。渡れます。'; if(dist) t += ` およそ${dist.toFixed(1)}メートル前。`; } else { t = color==='red' ? 'Traffic light is RED. Stop.' : 'Traffic light is GREEN. Go.'; if(dist) t += ` About ${dist.toFixed(1)} meters ahead.`; } speakThrottled(key, t); }
-  function maybeAnnounceObject(cls, dist, ang){ if(!a11yOnEl.checked) return; if(!dist) return; const dirTxt = angleToText(ang); // 優先クラスのみ頻度高め
-    const pri = (cls==='person'||cls==='car'||cls==='bicycle'||cls==='bus') ? 1 : 2;
-    const key = `obj_${pri}_${cls}_${dirTxt}`;
-    const dtxt = (langEl.value==='ja') ? `${Math.max(0.5, dist).toFixed(1)}メートル` : `${Math.max(0.5, dist).toFixed(1)} meters`;
-    let text = '';
-    if(langEl.value==='ja') text = `${dirTxt}、${dtxt}、${cls}`; else text = `${cls}, ${dtxt}, ${dirTxt}`;
-    // 優先1はクールダウン半分
-    const saved = cooldownEl.value; if(pri===1){ cooldownEl.value = Math.max(1, cooldownEl.value/2); }
-    speakThrottled(key, text);
-    cooldownEl.value = saved;
-  }(ang){ if(!a11yOnEl.checked) return; const deg=ang*180/Math.PI; let msgJa='まっすぐ', msgEn='straight'; if(deg<-10){ msgJa='右へ'; msgEn='right'; } else if(deg>10){ msgJa='左へ'; msgEn='left'; } const msg = (langEl.value==='ja')? msgJa : msgEn; speakThrottled((langEl.value==='ja')? msgJa : msgEn); beepFeedback(msg); }
-  function announceTraffic(color, dist){ let t=''; if(langEl.value==='ja'){ t = color==='red' ? '信号は赤です。止まってください。' : '信号は青です。渡れます。'; if(dist) t += ` およそ${dist.toFixed(1)}メートル前。`; } else { t = color==='red' ? 'Traffic light is RED. Stop.' : 'Traffic light is GREEN. Go.'; if(dist) t += ` About ${dist.toFixed(1)} meters ahead.`; } speakThrottled(t); }
-
-  // ===== UI wiring =====
-  const btnToggle=document.getElementById('btnToggle');
-  const btnClear=document.getElementById('btnClear');
-  const detectOn=document.getElementById('detectOn');
-  btnToggle.addEventListener('click', ()=>{ if(!running){ btnToggle.textContent='⏸ PAUSE'; startStream(); } else { btnToggle.textContent='▶︎ START'; stopStream(); } });
-  btnClear.addEventListener('click', ()=>{ streamEl.innerHTML=''; });
-  detectOn.addEventListener('change', ()=>{ clearTimeout(detTimer); detectionLoop(); });
-  detIntEl.addEventListener('input', ()=>{ clearTimeout(detTimer); detectionLoop(); });
-  window.addEventListener('orientationchange', ()=>{ if(video && video.srcObject) video.play().catch(()=>{}); setTimeout(resizeOverlay, 300); showToast('↻ 画面回転'); });
-
-  // ===== gate =====
-  document.getElementById('gateStart').addEventListener('click', async ()=>{
-    document.getElementById('gate').style.display='none';
-    await startCamera();
-    setupSensors();
-    showToast('📦 物体検出モデル読込中…');
-    try{ model = await cocoSsd.load({ base:'lite_mobilenet_v2' }); showToast('✅ 物体検出モデル準備完了'); }
-    catch(e){ console.warn(e); showToast('⚠ モデル読み込み失敗（オフライン？）'); document.getElementById('detectOn').checked=false; }
-    detectionLoop();
-    detectYellowPath();
+function drawDetections(preds){
+  ctx.clearRect(0,0,ov.width, ov.height);
+  preds.forEach(p=>{
+    const [x,y,w,h]=p.bbox; const cx=x+w/2;
+    const d = estimateDist([x,y,w,h], p.class);
+    // 水平角（左負右正）
+    const fov = parseInt(fovEl.value,10)*Math.PI/180; const dx=(cx - ov.width/2); const ang = (dx/(ov.width/2))*(fov/2);
+    let extra='';
+    if(p.class==='traffic light'){ try{ const crop=ctx.getImageData(x,y,w,h); const col=redOrGreen(crop); if(col){ extra = ' '+col.toUpperCase(); announceTraffic(col,d); } }catch(e){} }
+    ctx.strokeStyle='rgba(57,255,20,.85)'; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
+    const dirTxt = angleToText(ang);
+    const tag = `${p.class} ${(p.score*100|0)}%${d?` ~${d.toFixed(1)}m`:''} ${dirTxt}${extra}`;
+    ctx.fillStyle='rgba(0,0,0,.6)'; ctx.font='12px ui-monospace'; const tw=ctx.measureText(tag).width+10; ctx.fillRect(x, y-18, tw, 18);
+    ctx.fillStyle='#39ff14'; ctx.fillText(tag, x+4, y-5);
+    maybeAnnounceObject(p.class, d, ang);
   });
+  lastDetections = preds;
+}
+
+async function detLoop(){
+  if(!detectOnEl.checked || !model){ ctx.clearRect(0,0,ov.width, ov.height); return; }
+  try{ const preds = await model.detect(v); drawDetections(preds); }catch(e){ console.warn(e); }
+  setTimeout(detLoop, parseInt(detIntEl.value,10));
+}
+
+// ==== Yellow line & gap guide ====
+const proc = document.createElement('canvas'); const pctx=proc.getContext('2d');
+function yellowOrGap(){
+  const W=ov.width, H=ov.height; if(W*H===0){ setTimeout(yellowOrGap,200); return; }
+  proc.width=W; proc.height=H; pctx.drawImage(v,0,0,W,H);
+  const roiH = Math.floor(H*0.5);
+  const img = pctx.getImageData(0,H-roiH,W,roiH); const data=img.data;
+  const rows=[]; let yellowCount=0;
+  for(let y=0;y<roiH;y+=3){ let sum=0,cnt=0; for(let x=0;x<W;x+=2){ const i=((y*W)+x)*4; const {h,s,v}=hsvFromRgb(data[i],data[i+1],data[i+2]); if(v>0.35 && s>0.35 && h>20 && h<65){ sum+=x; cnt++; yellowCount++; } } if(cnt>8) rows.push({y, cx: sum/cnt}); }
+
+  ctx.save();
+  const useYellow = (guideModeEl.value==='yellow_first' && yellowCount>150);
+  if(useYellow){
+    ctx.strokeStyle='rgba(255,255,0,.9)'; ctx.lineWidth=3; ctx.setLineDash([8,6]);
+    ctx.beginPath(); let started=false;
+    rows.forEach(r=>{ const yy=H-roiH+r.y; const xx=r.cx; if(!isFinite(xx)) return; if(!started){ ctx.moveTo(xx,yy); started=true; } else ctx.lineTo(xx,yy); });
+    ctx.stroke();
+    if(rows.length>4){ const head=rows[Math.max(0,rows.length-8)], tail=rows[rows.length-1];
+      const ang=Math.atan2((H-roiH+tail.y)-(H-roiH+head.y), tail.cx-head.cx);
+      drawArrow(tail.cx, H-roiH+tail.y, ang); guideTurn(ang);
+    }
+  } else {
+    const cols=64, colW=W/cols; const occ = new Array(cols).fill(0);
+    (lastDetections||[]).forEach(p=>{ const [x,y,w,h]=p.bbox; const by=y+h; if(by < H*0.5) return; const s=Math.max(0, Math.floor(x/colW)); const e=Math.min(cols-1, Math.floor((x+w)/colW)); for(let c=s;c<=e;c++) occ[c]=1; });
+    let best=0,bs=0,cur=0,cs=0; for(let c=0;c<cols;c++){ if(occ[c]===0){ if(cur===0) cs=c; cur++; if(cur>best){ best=cur; bs=cs; } } else cur=0; }
+    const cx = (bs + best/2)*colW; const w = best*colW;
+    ctx.fillStyle='rgba(0,255,128,0.15)'; ctx.fillRect(bs*colW, H-roiH, w, roiH);
+    ctx.strokeStyle='rgba(0,255,128,0.9)'; ctx.lineWidth=3; ctx.setLineDash([10,6]);
+    ctx.beginPath(); ctx.moveTo(cx, H-roiH); ctx.lineTo(cx, H); ctx.stroke();
+    const ang = Math.atan2( (H - (H-roiH)), (cx - W/2) ); drawArrow(cx, H-10, ang); guideTurn(ang);
+  }
+  ctx.restore();
+  setTimeout(yellowOrGap, 120);
+}
+function drawArrow(x,y,ang){ const L=36; ctx.save(); ctx.translate(x,y); ctx.rotate(ang); ctx.fillStyle='rgba(255,255,0,.95)'; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-L,10); ctx.lineTo(-L,-10); ctx.closePath(); ctx.fill(); ctx.restore(); }
+
+// ==== A11y speech / beep / vib ====
+const a11yOnEl = document.getElementById('a11yOn');
+const langEl = document.getElementById('lang');
+const cooldownEl = document.getElementById('cooldown');
+const beepOnEl = document.getElementById('beepOn');
+const vibeOnEl = document.getElementById('vibeOn');
+const synth = window.speechSynthesis;
+let lastMap = new Map();
+
+function speak(t){ if(!a11yOnEl.checked) return; const u=new SpeechSynthesisUtterance(t); u.lang=(langEl.value==='ja')?'ja-JP':'en-US'; try{synth.cancel();}catch(_){ } synth.speak(u); }
+function throttleSay(key, text){ const now=performance.now(), cd=parseInt(cooldownEl.value,10)*1000, last=lastMap.get(key)||0; if(now-last>cd){ lastMap.set(key, now); speak(text); if(vibeOnEl.checked && navigator.vibrate) navigator.vibrate(120); } }
+function beep(f){ try{ const c=new (window.AudioContext||window.webkitAudioContext)(), o=c.createOscillator(), g=c.createGain(); o.frequency.value=f; o.connect(g); g.connect(c.destination); g.gain.setValueAtTime(0.0001,c.currentTime); g.gain.exponentialRampToValueAtTime(0.08,c.currentTime+0.02); o.start(); o.stop(c.currentTime+0.12);}catch(e){} }
+function angleToText(ang){ const d=ang*180/Math.PI; if(d<-15) return langEl.value==='ja'?'左':'left'; if(d>15) return langEl.value==='ja'?'右':'right'; return langEl.value==='ja'?'前方':'ahead'; }
+function guideTurn(ang){ const d=ang*180/Math.PI; let dir='straight'; if(d<-10) dir='left'; else if(d>10) dir='right';
+  const msg=(langEl.value==='ja')?(dir==='straight'?'まっすぐ':dir==='left'?'左へ':'右へ'):(dir==='straight'?'straight':dir==='left'?'left':'right');
+  throttleSay('guide', msg); if(beepOnEl.checked) beep(dir==='straight'?600:dir==='left'?450:800);
+}
+function announceTraffic(color, dist){ const key='traffic_'+color; let t=''; if(langEl.value==='ja'){ t = color==='red' ? '信号は赤です。止まってください。' : '信号は青です。渡れます。'; if(dist) t += ` およそ${dist.toFixed(1)}メートル前。`; } else { t = color==='red' ? 'Traffic light is RED. Stop.' : 'Traffic light is GREEN. Go.'; if(dist) t += ` About ${dist.toFixed(1)} meters ahead.`; } throttleSay(key, t); }
+function maybeAnnounceObject(cls, dist, ang){ if(!a11yOnEl.checked || !dist) return; const dir=angleToText(ang); const pri=(cls==='person'||cls==='car'||cls==='bicycle'||cls==='bus')?1:2; const key=`obj_${pri}_${cls}_${dir}`; const d=(langEl.value==='ja')?`${Math.max(0.5,dist).toFixed(1)}メートル`:`${Math.max(0.5,dist).toFixed(1)} meters`; const text=(langEl.value==='ja')?`${dir}、${d}、${cls}`:`${cls}, ${d}, ${dir}`; const saved=cooldownEl.value; if(pri===1) cooldownEl.value=Math.max(1, cooldownEl.value/2); throttleSay(key, text); cooldownEl.value=saved; }
+
+// ==== UI / boot ====
+document.getElementById('gateStart').onclick = async()=>{
+  document.getElementById('gate').style.display='none';
+  try{
+    await startCamera();
+    toast('📦 モデル読込中…');
+    try{ model = await cocoSsd.load({ base:'lite_mobilenet_v2' }); toast('✅ 準備完了'); }catch(e){ console.warn(e); toast('⚠ モデル読み込み失敗（オフライン？）'); document.getElementById('detectOn').checked=false; }
+    detLoop();
+    yellowOrGap();
+  }catch(e){ /* startCamera 内で通知済み */ }
+};
+
+document.getElementById('start').onclick = ()=>{ /* 予備ボタン: ガイドの再起動などに使える */ };
+detectOnEl.onchange = ()=>{ clearTimeout(detTimer); detLoop(); };
+detIntEl.oninput = ()=>{ clearTimeout(detTimer); detLoop(); };
+addEventListener('orientationchange', ()=>{ if(v && v.srcObject) v.play().catch(()=>{}); setTimeout(resize,300); toast('↻ 画面回転'); });
 </script>
 </body>
 </html>
