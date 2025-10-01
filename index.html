@@ -48,6 +48,7 @@
   <meta name="description" content="視覚支援モード（音声案内・ビープ・振動）つき実験的ARアプリ。黄線ガイド/信号色推定対応。" />
 </head>
 <body>
+  <div id="toast" style="position:fixed;left:50%;transform:translateX(-50%);top:10px;padding:8px 12px;border:1px solid rgba(57,255,20,.5);border-radius:10px;background:rgba(0,0,0,.55);color:#39ff14;font:12px ui-monospace;z-index:20;display:none"></div>
   <div id="camWrap">
     <video id="video" autoplay playsinline muted></video>
     <canvas id="overlay"></canvas>
@@ -92,15 +93,18 @@
   const overlay = document.getElementById('overlay');
   const octx = overlay.getContext('2d');
 
+  function showToast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(showToast._timer); showToast._timer=setTimeout(()=>{ t.style.display='none'; }, 2500); }
+
   async function startCamera(){
+    if (!window.isSecureContext) { showToast('⚠ HTTPSが必要です'); throw new Error('Insecure context'); }
+    const v = document.getElementById('video'); v.setAttribute('playsinline','');
     try{
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio:false });
-      video.srcObject = stream; await video.play();
-      resizeOverlay();
-      window.addEventListener('resize', resizeOverlay);
-    }catch(err){ alert('カメラにアクセスできません: '+err.message); console.error(err); }
+      v.srcObject = stream; await new Promise(res=>{ v.onloadedmetadata=res; }); await v.play(); resizeOverlay(); window.addEventListener('resize', resizeOverlay); showToast('📷 カメラ起動');
+    }catch(err){ console.error(err); showToast('❌ カメラ失敗: '+err.message); alert('カメラにアクセスできませんでした:
+'+err.name+': '+err.message); throw err; }
   }
-  function resizeOverlay(){ overlay.width = video.clientWidth; overlay.height = video.clientHeight; }
+  function resizeOverlay(){ overlay.width = video.clientWidth || window.innerWidth; overlay.height = video.clientHeight || window.innerHeight; }(){ overlay.width = video.clientWidth; overlay.height = video.clientHeight; }
 
   // ====== HUD・UI ======
   const panelEl = document.getElementById('panel');
@@ -251,13 +255,17 @@
     document.getElementById('gate').style.display='none';
     await startCamera();
     setupSensors();
-    model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    showToast('📦 物体検出モデル読込中…');
+    try{ model = await cocoSsd.load({ base: 'lite_mobilenet_v2' }); showToast('✅ 物体検出モデル準備完了'); }
+    catch(e){ console.warn(e); showToast('⚠ 物体検出モデルの読み込みに失敗（オフライン？）'); detectOnEl.checked=false; }
     detectionLoop();
     detectYellowPath();
   });
     setupSensors();
     // モデルのロード（必要なときだけ）
-    model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    showToast('📦 物体検出モデル読込中…');
+    try{ model = await cocoSsd.load({ base: 'lite_mobilenet_v2' }); showToast('✅ 物体検出モデル準備完了'); }
+    catch(e){ console.warn(e); showToast('⚠ 物体検出モデルの読み込みに失敗（オフライン？）'); detectOnEl.checked=false; }
     detectionLoop();
   });
 
@@ -267,7 +275,7 @@
   fovEl.addEventListener('input', ()=>{ /* 次フレームで距離再計算 */ });
 
   // iOS 縦横変更対策
-  window.addEventListener('orientationchange', ()=>{ if(video && video.srcObject) video.play().catch(()=>{}); setTimeout(resizeOverlay, 300); });
+  window.addEventListener('orientationchange', ()=>{ if(video && video.srcObject) video.play().catch(()=>{}); setTimeout(resizeOverlay, 300); showToast('↻ 画面回転'); }); setTimeout(resizeOverlay, 300); });
 </script>
 </body>
 </html>
