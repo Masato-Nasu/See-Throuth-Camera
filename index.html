@@ -12,7 +12,7 @@
     :root{ --bg:#000; --grid:rgba(0,255,128,.12); --green:#39ff14; --text:#d7ffd7; }
     html,body{ margin:0;height:100%;background:var(--bg);color:var(--text);font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden; }
     #camWrap{ position:fixed; inset:0; overflow:hidden; }
-    #video{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; filter:saturate(1.1) contrast(1.05) brightness(1.05); transform:scaleX(-1); }
+    #video{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; filter:saturate(1.1) contrast(1.05) brightness(1.05);  }
     #overlay{ position:absolute; inset:0; pointer-events:none; }
     #hud{ position:fixed; inset:0; pointer-events:none; }
     .panel{ position:absolute; left:50%; transform:translateX(-50%); bottom:6vh; width:min(1000px,92vw); height:56vh; background:linear-gradient(180deg,rgba(0,0,0,.15),rgba(0,0,0,.35)); border:1px solid rgba(57,255,20,.35); border-radius:16px; box-shadow:0 0 24px rgba(57,255,20,.12), inset 0 0 40px rgba(57,255,20,.06); backdrop-filter:blur(6px) saturate(1.1); -webkit-backdrop-filter:blur(6px) saturate(1.1); overflow:hidden; }
@@ -43,34 +43,32 @@
 
   <div id="hud">
     <div class="panel" id="panel">
-      <div class="title">A11y AR — THOUGHT STREAM / OBJECTS / YELLOW LINE / SIGNAL</div>
-      <div id="stream"></div>
+      <div class="title">A11y AR — OBJECTS / RANGE / TRAFFIC / YELLOW or GAP GUIDE</div>
+      <!-- 思考ストリーム削除: ナビ専用UIに簡素化 -->
       <div id="controls">
         <button class="btn" id="btnToggle">▶︎ START</button>
         <button class="btn" id="btnClear">CLEAR</button>
-        <span class="label">Text rate</span>
-        <input class="range" id="rate" type="range" min="5" max="60" value="12" />
-        <span class="label">Typing</span>
-        <input class="range" id="typing" type="range" min="20" max="160" value="75" />
-        <span class="label">Max lines</span>
-        <input class="range" id="maxlines" type="range" min="10" max="250" value="90" />
         <span class="label">Detect</span>
         <input id="detectOn" type="checkbox" checked aria-label="物体検出オン" />
         <span class="label">FOV°</span>
         <input class="range" id="fov" type="range" min="45" max="85" value="60" />
         <span class="label">Intvl(ms)</span>
-        <input class="range" id="detInt" type="range" min="250" max="1800" value="800" />
+        <input class="range" id="detInt" type="range" min="250" max="1800" value="700" />
         <span class="label">A11y</span>
-        <input id="a11yOn" type="checkbox" aria-label="視覚支援モード" />
+        <input id="a11yOn" type="checkbox" aria-label="視覚支援モード" checked />
         <span class="label">Lang</span>
         <select id="lang" aria-label="言語"><option value="ja">日本語</option><option value="en">English</option></select>
         <span class="label">Cooldown s</span>
-        <input class="range" id="cooldown" type="range" min="1" max="8" value="3" />
+        <input class="range" id="cooldown" type="range" min="1" max="8" value="2" />
         <span class="label">Beep</span>
         <input id="beepOn" type="checkbox" checked aria-label="ビープ音オン" />
         <span class="label">Vibe</span>
         <input id="vibeOn" type="checkbox" checked aria-label="バイブレーションオン" />
-        <input class="input" id="prompt" placeholder="環境メモ / キーワード（任意）" />
+        <span class="label">Guide</span>
+        <select id="guideMode" aria-label="ガイドモード">
+          <option value="yellow_first">黄線優先</option>
+          <option value="gap_only">ギャップ誘導</option>
+        </select>
       </div>
     </div>
   </div>
@@ -104,7 +102,8 @@
       resizeOverlay();
       window.addEventListener('resize', resizeOverlay);
       showToast('📷 カメラ起動');
-    }catch(err){ console.error(err); showToast('❌ カメラ失敗: '+err.message); alert('カメラにアクセスできませんでした:\n'+err.name+': '+err.message); throw err; }
+    }catch(err){ console.error(err); showToast('❌ カメラ失敗: '+err.message); alert('カメラにアクセスできませんでした:
+'+err.name+': '+err.message); throw err; }
   }
   function resizeOverlay(){ overlay.width = video.clientWidth || window.innerWidth; overlay.height = video.clientHeight || window.innerHeight; }
 
@@ -117,19 +116,7 @@
   }
   function sensorSummary(){ const p=[]; if (sensors.geo) p.push(`GPS ${sensors.geo.lat},${sensors.geo.lon}`); if (sensors.motion) p.push(`acc x:${sensors.motion.ax?.toFixed(1)} y:${sensors.motion.ay?.toFixed(1)} z:${sensors.motion.az?.toFixed(1)}`); if (sensors.orientation) p.push(`ori α:${sensors.orientation.alpha?.toFixed(0)} β:${sensors.orientation.beta?.toFixed(0)} γ:${sensors.orientation.gamma?.toFixed(0)}`); return p.join(' | '); }
 
-  // ===== thought stream =====
-  let running=false, loopTimer=null;
-  const streamEl = document.getElementById('stream');
-  const rateEl = document.getElementById('rate');
-  const typingEl = document.getElementById('typing');
-  const maxLinesEl = document.getElementById('maxlines');
-  function pushLine(text, withCursor=false){ const div=document.createElement('div'); div.className='line'+(withCursor?' cursor':''); div.textContent=text; streamEl.appendChild(div); const maxLines=parseInt(maxLinesEl.value,10); while(streamEl.children.length>maxLines){ streamEl.removeChild(streamEl.firstChild); } streamEl.scrollTo({top:streamEl.scrollHeight, behavior:'smooth'}); }
-  function* typewriterChunks(str){ let i=0, step=(Math.random()<0.5?2:1); while(i<str.length){ yield str.slice(i, i+=step); } }
-  function typeLine(line){ const it=typewriterChunks(line); let acc=''; const stepFn=()=>{ const n=it.next(); if(n.done){ const last=streamEl.lastElementChild; if(last) last.classList.remove('cursor'); return; } acc+=n.value; const last=streamEl.lastElementChild; if(!last||!last.classList.contains('cursor')){ pushLine(acc,true);} else { last.textContent=acc; } streamEl.scrollTop=streamEl.scrollHeight; setTimeout(stepFn, parseInt(typingEl.value,10)); }; stepFn(); }
-  function startStream(){ if(running) return; running=true; pushLine('--- THOUGHT STREAM ONLINE ---'); const prompt=document.getElementById('prompt').value.trim(); const seed=['光量チェック… エッジ低→暗所補正','環境雑音: 低 // 推定','位置推定: Tokyo 近傍?','問いの輪郭抽出中…','類似事例=3件 / conf=0.62','曖昧さ許容→仮説を並列化','説明可能性>厳密性 を暫定優先','センサー重み w=0.35','自己修正ループ: on','分布が広い→表現を圧縮']; const loop=()=>{ if(!running) return; const base=seed[Math.floor(Math.random()*seed.length)]; const sens=sensorSummary(); const line=[new Date().toLocaleTimeString(), base, sens, (prompt?`hint:${prompt}`:'')].filter(Boolean).join('  //  '); typeLine(line); const lpm=parseInt(rateEl.value,10); const interval=Math.max(60000/lpm, 400); loopTimer=setTimeout(loop, interval + Math.random()*0.4*interval); }; loop(); }
-  function stopStream(){ running=false; clearTimeout(loopTimer); const last=streamEl.lastElementChild; if(last) last.classList.remove('cursor'); pushLine('--- PAUSED ---'); }
-
-  // ===== object detection & traffic light color =====
+  // ===== object detection & traffic light color ===== & traffic light color =====
   let model=null, detTimer=null;
   const detectOnEl = document.getElementById('detectOn');
   const fovEl = document.getElementById('fov');
@@ -139,13 +126,60 @@
   function estimateDistanceM(box, klass){ const pxH=box[3]; const W=overlay.width; const f=focalPx(W, parseInt(fovEl.value,10)); const Hm=TYPICAL_HEIGHT_M[klass]||0.3; if(pxH<=1) return null; return (Hm*f)/pxH; }
   function hsvFromRgb(r,g,b){ r/=255; g/=255; b/=255; const max=Math.max(r,g,b), min=Math.min(r,g,b); let h=0,s=0,v=max; const d=max-min; s=max===0?0:d/max; if(max!==min){ switch(max){ case r: h=(g-b)/d+(g<b?6:0); break; case g: h=(b-r)/d+2; break; case b: h=(r-g)/d+4; break; } h/=6; } return {h:h*360,s,v}; }
   function isRedGreenFromCrop(imgData){ const data=imgData.data; let rc=0,gc=0; for(let i=0;i<data.length;i+=4){ const h=hsvFromRgb(data[i],data[i+1],data[i+2]); if(h.v<0.2||h.s<0.35) continue; if(h.h<25||h.h>335) rc++; else if(h.h>75&&h.h<170) gc++; } if(rc+gc<50) return null; return rc>gc? 'red':'green'; }
-  function drawDetections(preds){ octx.clearRect(0,0,overlay.width, overlay.height); octx.save(); octx.scale(-1,1); octx.translate(-overlay.width,0); preds.forEach(p=>{ const [x,y,w,h]=p.bbox; const d=estimateDistanceM([x,y,w,h], p.class); let extra=''; if(p.class==='traffic light'){ try{ const crop=octx.getImageData(x,y,w,h); const col=isRedGreenFromCrop(crop); if(col){ extra=` ${col.toUpperCase()}`; if(a11yOnEl.checked) announceTraffic(col,d); } }catch(e){} } octx.strokeStyle='rgba(57,255,20,.85)'; octx.lineWidth=2; octx.strokeRect(x,y,w,h); const tag=`${p.class} ${(p.score*100|0)}%${d?` ~${d.toFixed(1)}m`:''}${extra}`; octx.fillStyle='rgba(0,0,0,.6)'; const tw = (octx.measureText(tag).width||120)+10; octx.fillRect(x, y-18, tw, 18); octx.fillStyle='#39ff14'; octx.font='12px ui-monospace'; octx.fillText(tag, x+4, y-5); }); octx.restore(); }
+  function drawDetections(preds){
+    octx.clearRect(0,0,overlay.width, overlay.height);
+    // 描画の基準はミラー無し
+    preds.forEach(p=>{
+      const [x,y,w,h]=p.bbox; const cx=x+w/2; const cy=y+h/2;
+      const d=estimateDistanceM([x,y,w,h], p.class);
+      // 方向推定（水平FOVから角度）
+      const W=overlay.width; const fov=parseInt(fovEl.value,10)*Math.PI/180; const dx=(cx - W/2); const ang = (dx/(W/2))*(fov/2); // 左負,右正（ラジアン）
+      // ラベル
+      let extra='';
+      if(p.class==='traffic light'){
+        try{ const crop=octx.getImageData(x,y,w,h); const col=isRedGreenFromCrop(crop); if(col){ extra=` ${col.toUpperCase()}`; if(a11yOnEl.checked) announceTraffic(col,d); } }catch(e){}
+      }
+      // 枠
+      octx.strokeStyle='rgba(57,255,20,.85)'; octx.lineWidth=2; octx.strokeRect(x,y,w,h);
+      const dirTxt = angleToText(ang);
+      const tag = `${p.class} ${(p.score*100|0)}%${d?` ~${d.toFixed(1)}m`:''} ${dirTxt}${extra}`;
+      octx.fillStyle='rgba(0,0,0,.6)'; octx.font='12px ui-monospace'; const tw=octx.measureText(tag).width+10; octx.fillRect(x, y-18, tw, 18);
+      octx.fillStyle='#39ff14'; octx.fillText(tag, x+4, y-5);
+      // アナウンス（抑制付き）
+      maybeAnnounceObject(p.class, d, ang);
+    });
+  }{ octx.clearRect(0,0,overlay.width, overlay.height); octx.save(); octx.scale(-1,1); octx.translate(-overlay.width,0); preds.forEach(p=>{ const [x,y,w,h]=p.bbox; const d=estimateDistanceM([x,y,w,h], p.class); let extra=''; if(p.class==='traffic light'){ try{ const crop=octx.getImageData(x,y,w,h); const col=isRedGreenFromCrop(crop); if(col){ extra=` ${col.toUpperCase()}`; if(a11yOnEl.checked) announceTraffic(col,d); } }catch(e){} } octx.strokeStyle='rgba(57,255,20,.85)'; octx.lineWidth=2; octx.strokeRect(x,y,w,h); const tag=`${p.class} ${(p.score*100|0)}%${d?` ~${d.toFixed(1)}m`:''}${extra}`; octx.fillStyle='rgba(0,0,0,.6)'; const tw = (octx.measureText(tag).width||120)+10; octx.fillRect(x, y-18, tw, 18); octx.fillStyle='#39ff14'; octx.font='12px ui-monospace'; octx.fillText(tag, x+4, y-5); }); octx.restore(); }
   async function detectionLoop(){ if(!detectOnEl.checked || !model){ octx.clearRect(0,0,overlay.width, overlay.height); return; } try{ const preds = await model.detect(video); drawDetections(preds); }catch(e){ console.warn(e); } detTimer=setTimeout(detectionLoop, parseInt(detIntEl.value,10)); }
 
-  // ===== yellow line (guide) =====
+  // ===== yellow line (guide) + gap-based fallback =====
   let yellowTimer=null; const proc=document.createElement('canvas'), pctx=proc.getContext('2d');
-  function detectYellowPath(){ const W=overlay.width, H=overlay.height; if(W*H===0) { yellowTimer=setTimeout(detectYellowPath, 200); return; } proc.width=W; proc.height=H; pctx.drawImage(video,0,0,W,H); const roiH=Math.floor(H*0.5); const img=pctx.getImageData(0,H-roiH,W,roiH); const data=img.data; const rowSamples=[]; for(let y=0;y<roiH;y+=3){ let rowSum=0,rowCnt=0; for(let x=0;x<W;x+=2){ const i=((y*W)+x)*4; const {h,s,v}=hsvFromRgb(data[i],data[i+1],data[i+2]); if(v>0.35 && s>0.35 && h>20 && h<65){ rowSum+=x; rowCnt++; } } if(rowCnt>8) rowSamples.push({y, cx: rowSum/rowCnt}); }
-    octx.save(); octx.strokeStyle='rgba(255,255,0,.9)'; octx.lineWidth=3; octx.setLineDash([8,6]); octx.beginPath(); let started=false; rowSamples.forEach(r=>{ const yy=H-roiH+r.y; const xx=W - r.cx; if(!isFinite(xx)) return; if(!started){ octx.moveTo(xx,yy); started=true; } else { octx.lineTo(xx,yy); } }); octx.stroke(); if(rowSamples.length>4){ const head=rowSamples[Math.max(0,rowSamples.length-8)]; const tail=rowSamples[rowSamples.length-1]; const hx=W - head.cx, hy=H-roiH+head.y; const tx=W - tail.cx, ty=H-roiH+tail.y; const ang=Math.atan2(ty-hy, tx-hx); drawArrow(tx,ty,ang); guideTurn(ang); } octx.restore(); yellowTimer=setTimeout(detectYellowPath, 120); }
+  function detectYellowPath(){
+    const W=overlay.width, H=overlay.height; if(W*H===0){ yellowTimer=setTimeout(detectYellowPath,200); return; }
+    proc.width=W; proc.height=H; pctx.drawImage(video,0,0,W,H);
+    const roiH=Math.floor(H*0.5); const img=pctx.getImageData(0,H-roiH,W,roiH); const data=img.data;
+    const rowSamples=[]; let yellowCount=0;
+    for(let y=0;y<roiH;y+=3){ let rowSum=0,rowCnt=0; for(let x=0;x<W;x+=2){ const i=((y*W)+x)*4; const {h,s,v}=hsvFromRgb(data[i],data[i+1],data[i+2]); if(v>0.35 && s>0.35 && h>20 && h<65){ rowSum+=x; rowCnt++; yellowCount++; } } if(rowCnt>8) rowSamples.push({y, cx: rowSum/rowCnt}); }
+    octx.save();
+    const useYellow = (guideModeEl.value==='yellow_first' && yellowCount>150);
+    if(useYellow){
+      // 黄線ガイド描画
+      octx.strokeStyle='rgba(255,255,0,.9)'; octx.lineWidth=3; octx.setLineDash([8,6]); octx.beginPath(); let started=false; rowSamples.forEach(r=>{ const yy=H-roiH+r.y; const xx=r.cx; if(!isFinite(xx)) return; if(!started){ octx.moveTo(xx,yy); started=true; } else { octx.lineTo(xx,yy);} }); octx.stroke();
+      if(rowSamples.length>4){ const head=rowSamples[Math.max(0,rowSamples.length-8)]; const tail=rowSamples[rowSamples.length-1]; const ang=Math.atan2((H-roiH+tail.y)-(H-roiH+head.y), tail.cx-head.cx); drawArrow(tail.cx, H-roiH+tail.y, ang); guideTurn(ang); }
+    } else {
+      // Fallback: 物体検出のバウンディングボックスから下半分の障害マップを作り、最も広いギャップを通路と見なす
+      const columns = 64; const colW = W/columns; const occ = new Array(columns).fill(0);
+      (lastDetections||[]).forEach(p=>{ const [x,y,w,h]=p.bbox; const by=y+h; if(by < H*0.5) return; const start=Math.max(0, Math.floor(x/colW)); const end=Math.min(columns-1, Math.floor((x+w)/colW)); for(let c=start;c<=end;c++) occ[c]=1; });
+      let bestLen=0,bestStart=0; let cur=0,curStart=0; for(let c=0;c<columns;c++){ if(occ[c]===0){ if(cur===0) curStart=c; cur++; if(cur>bestLen){ bestLen=cur; bestStart=curStart; } } else { cur=0; } }
+      const gapCx = (bestStart + bestLen/2)*colW; const gapW = bestLen*colW;
+      // 可視化
+      octx.fillStyle='rgba(0,255,128,0.15)'; octx.fillRect(bestStart*colW, H-roiH, gapW, roiH);
+      octx.strokeStyle='rgba(0,255,128,0.9)'; octx.lineWidth=3; octx.setLineDash([10,6]); octx.beginPath(); octx.moveTo(gapCx, H-roiH); octx.lineTo(gapCx, H); octx.stroke();
+      const ang = Math.atan2( (H - (H-roiH)), (gapCx - W/2) ); drawArrow(gapCx, H-10, ang);
+      guideTurn(ang);
+    }
+    octx.restore();
+    yellowTimer=setTimeout(detectYellowPath, 120);
+  } }
   function drawArrow(x,y,ang){ const L=36; octx.save(); octx.translate(x,y); octx.rotate(ang); octx.fillStyle='rgba(255,255,0,.95)'; octx.beginPath(); octx.moveTo(0,0); octx.lineTo(-L,10); octx.lineTo(-L,-10); octx.closePath(); octx.fill(); octx.restore(); }
 
   // ===== accessibility: speech / beep / vibration =====
@@ -154,13 +188,27 @@
   const cooldownEl = document.getElementById('cooldown');
   const beepOnEl = document.getElementById('beepOn');
   const vibeOnEl = document.getElementById('vibeOn');
+  const guideModeEl = document.getElementById('guideMode');
   const synth = window.speechSynthesis;
-  let lastSpeakAt=0;
-  function speak(text){ if(!a11yOnEl.checked) return; const u=new SpeechSynthesisUtterance(text); u.lang= (langEl.value==='ja')? 'ja-JP':'en-US'; u.rate=1; try{ synth.cancel(); }catch(_){} synth.speak(u); }
-  function speakThrottled(text){ const now=performance.now(); const cd=parseInt(cooldownEl.value,10)*1000; if(now-lastSpeakAt>cd){ lastSpeakAt=now; speak(text); if(vibeOnEl.checked && navigator.vibrate) navigator.vibrate(120); } }
+  let lastSpeakAt=0; const spokeMap = new Map();
+  function speak(text){ if(!a11yOnEl.checked) return; const u=new SpeechSynthesisUtterance(text); u.lang=(langEl.value==='ja')?'ja-JP':'en-US'; u.rate=1; try{synth.cancel();}catch(_){} synth.speak(u); }
+  function speakThrottled(key, text){ const now=performance.now(); const cd=parseInt(cooldownEl.value,10)*1000; const last=spokeMap.get(key)||0; if(now-last>cd){ spokeMap.set(key,now); speak(text); if(vibeOnEl.checked && navigator.vibrate) navigator.vibrate(120); } }
   function beep(f){ try{ const ctx=new (window.AudioContext||window.webkitAudioContext)(); const o=ctx.createOscillator(); const g=ctx.createGain(); o.type='sine'; o.frequency.value=f; o.connect(g); g.connect(ctx.destination); g.gain.setValueAtTime(0.0001, ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime+0.02); o.start(); o.stop(ctx.currentTime+0.12); }catch(e){} }
-  function beepFeedback(msg){ if(!beepOnEl.checked) return; const f = msg==='straight'?600 : msg==='left'? 450 : 800; beep(f); }
-  function guideTurn(ang){ if(!a11yOnEl.checked) return; const deg=ang*180/Math.PI; let msgJa='まっすぐ', msgEn='straight'; if(deg<-10){ msgJa='右へ'; msgEn='right'; } else if(deg>10){ msgJa='左へ'; msgEn='left'; } const msg = (langEl.value==='ja')? msgJa : msgEn; speakThrottled((langEl.value==='ja')? msgJa : msgEn); beepFeedback(msg); }
+  function beepFeedback(dir){ if(!beepOnEl.checked) return; const f = dir==='straight'?600 : dir==='left'? 450 : 800; beep(f); }
+  function angleToText(ang){ const deg=ang*180/Math.PI; if(deg<-15) return (langEl.value==='ja')?'左':'left'; if(deg>15) return (langEl.value==='ja')?'右':'right'; return (langEl.value==='ja')?'前方':'ahead'; }
+  function guideTurn(ang){ if(!a11yOnEl.checked) return; const deg=ang*180/Math.PI; let dir='straight'; if(deg<-10) dir='left'; else if(deg>10) dir='right'; const msg = (langEl.value==='ja') ? (dir==='straight'?'まっすぐ': dir==='left'?'左へ':'右へ') : (dir==='straight'?'straight': dir==='left'?'left':'right'); speakThrottled('guide', msg); beepFeedback(dir); }
+  function announceTraffic(color, dist){ const key='traffic_'+color; let t=''; if(langEl.value==='ja'){ t = color==='red' ? '信号は赤です。止まってください。' : '信号は青です。渡れます。'; if(dist) t += ` およそ${dist.toFixed(1)}メートル前。`; } else { t = color==='red' ? 'Traffic light is RED. Stop.' : 'Traffic light is GREEN. Go.'; if(dist) t += ` About ${dist.toFixed(1)} meters ahead.`; } speakThrottled(key, t); }
+  function maybeAnnounceObject(cls, dist, ang){ if(!a11yOnEl.checked) return; if(!dist) return; const dirTxt = angleToText(ang); // 優先クラスのみ頻度高め
+    const pri = (cls==='person'||cls==='car'||cls==='bicycle'||cls==='bus') ? 1 : 2;
+    const key = `obj_${pri}_${cls}_${dirTxt}`;
+    const dtxt = (langEl.value==='ja') ? `${Math.max(0.5, dist).toFixed(1)}メートル` : `${Math.max(0.5, dist).toFixed(1)} meters`;
+    let text = '';
+    if(langEl.value==='ja') text = `${dirTxt}、${dtxt}、${cls}`; else text = `${cls}, ${dtxt}, ${dirTxt}`;
+    // 優先1はクールダウン半分
+    const saved = cooldownEl.value; if(pri===1){ cooldownEl.value = Math.max(1, cooldownEl.value/2); }
+    speakThrottled(key, text);
+    cooldownEl.value = saved;
+  }(ang){ if(!a11yOnEl.checked) return; const deg=ang*180/Math.PI; let msgJa='まっすぐ', msgEn='straight'; if(deg<-10){ msgJa='右へ'; msgEn='right'; } else if(deg>10){ msgJa='左へ'; msgEn='left'; } const msg = (langEl.value==='ja')? msgJa : msgEn; speakThrottled((langEl.value==='ja')? msgJa : msgEn); beepFeedback(msg); }
   function announceTraffic(color, dist){ let t=''; if(langEl.value==='ja'){ t = color==='red' ? '信号は赤です。止まってください。' : '信号は青です。渡れます。'; if(dist) t += ` およそ${dist.toFixed(1)}メートル前。`; } else { t = color==='red' ? 'Traffic light is RED. Stop.' : 'Traffic light is GREEN. Go.'; if(dist) t += ` About ${dist.toFixed(1)} meters ahead.`; } speakThrottled(t); }
 
   // ===== UI wiring =====
