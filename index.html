@@ -3,114 +3,125 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>視覚支援AR：緑HUD + 物体検出 + 黄線ガイド + 信号色</title>
-  <meta name="description" content="視覚支援モード（音声案内・ビープ・振動）つき実験的ARアプリ。黄線ガイド/信号色推定対応。" />
-  <!-- TF.js & COCO-SSD (物体検出) -->
+  <title>視覚支援AR：物体・距離・方向 読み上げ（日本語）</title>
+  <meta name="description" content="近い順に日本語で読み上げ。大きな日本語ラベル。信号色の読み上げ。" />
+  <!-- 正しいCDN -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.19.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
   <style>
-    :root{ --bg:#000; --green:#39ff14; --text:#d7ffd7; }
-    html,body{ margin:0;height:100%;background:var(--bg);color:var(--text);font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden; }
-    #camWrap{ position:fixed; inset:0; overflow:hidden; }
-    #video{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
-    #overlay{ position:absolute; inset:0; pointer-events:none; }
-    #hud{ position:fixed; inset:0; pointer-events:none; }
-    .panel{ position:absolute; left:50%; transform:translateX(-50%); bottom:6vh; width:min(1000px,92vw); height:56vh; background:transparent; border:1px solid rgba(57,255,20,.35); border-radius:16px; box-shadow:0 0 24px rgba(57,255,20,.12), inset 0 0 40px rgba(57,255,20,.06); overflow:hidden; }
-    .title{ position:absolute; inset:0 0 auto 0; height:42px; background:rgba(0,0,0,.5); border-bottom:1px solid rgba(57,255,20,.35); display:flex; align-items:center; padding:0 16px; font-weight:600; letter-spacing:.06em; color:var(--green); text-shadow:0 0 8px rgba(57,255,20,.8); }
-    #controls{ position:absolute; inset:auto 0 0 0; height:98px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:8px 10px; background:transparent; border-top:1px solid rgba(57,255,20,.25); pointer-events:auto; }
-    .btn{ border:1px solid rgba(57,255,20,.55); background:rgba(0,0,0,.25); color:var(--green); padding:8px 12px; border-radius:10px; font-weight:600; letter-spacing:.04em; cursor:pointer; }
-    .input,.range,select{ border:1px solid rgba(57,255,20,.35); background:rgba(0,0,0,.25); color:var(--text); border-radius:8px; padding:6px 10px; }
-    .label{ color:var(--green); font-size:12px; margin:0 6px 0 4px; opacity:.9; }
-    #gate{ position:fixed; inset:0; display:grid; place-items:center; background:rgba(0,0,0,.9); color:var(--text); z-index:10; text-align:center; padding:24px; }
-    #gate .start{ font-size:18px; padding:12px 20px; border-radius:14px; cursor:pointer; border:1px solid rgba(57,255,20,.6); background:rgba(0,0,0,.35); color:var(--green); }
+    :root{ --green:#39ff14; --text:#e8ffe8; }
+    html,body{ margin:0;height:100%;background:#000;color:var(--text);font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden }
+    #wrap{ position:fixed; inset:0; }
+    video{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover }
+    canvas{ position:absolute; inset:0; pointer-events:none }
+    #controls{ position:fixed; left:0; right:0; bottom:0; display:flex; gap:10px; padding:10px; background:transparent; border-top:1px solid rgba(57,255,20,.25) }
+    .label{ color:var(--green); font-size:12px; margin:0 4px }
+    .range, select, .btn{ border:1px solid rgba(57,255,20,.45); background:rgba(0,0,0,.25); color:var(--text); border-radius:10px; padding:6px 10px }
+    .btn{ cursor:pointer }
+    #gate{ position:fixed; inset:0; display:grid; place-items:center; background:rgba(0,0,0,.9); color:var(--text); z-index:10; text-align:center; gap:14px }
+    #toast{ position:fixed; left:50%; transform:translateX(-50%); top:10px; padding:8px 12px; border:1px solid rgba(57,255,20,.5); border-radius:10px; background:rgba(0,0,0,.55); color:var(--green); display:none; z-index:20 }
   </style>
 </head>
 <body>
-  <div id="camWrap">
-    <video id="video" autoplay playsinline muted></video>
-    <canvas id="overlay"></canvas>
+  <div id="toast"></div>
+  <div id="wrap">
+    <video id="v" autoplay playsinline muted></video>
+    <canvas id="ov"></canvas>
   </div>
-
-  <div id="hud">
-    <div class="panel">
-      <div class="title">A11y AR — OBJECTS / RANGE / TRAFFIC / YELLOW or GAP GUIDE</div>
-      <div id="controls">
-        <button class="btn" id="btnToggle">▶︎ START</button>
-        <span class="label">Detect</span><input id="detectOn" type="checkbox" checked />
-        <span class="label">FOV°</span><input class="range" id="fov" type="range" min="45" max="85" value="60" />
-        <span class="label">読み上げ</span>
-        <select id="announceMode">
-          <option value="important">重要のみ（人・車・自転車・バス）</option>
-          <option value="people_vehicles">人＋乗り物</option>
-          <option value="all">すべて</option>
-        </select>
-        <span class="label">最大件数</span><input class="range" id="topK" type="range" min="1" max="3" value="1" />
-        <span class="label">ガイド</span>
-        <select id="guideMode">
-          <option value="yellow_first">黄線優先</option>
-          <option value="gap_only">ギャップ誘導</option>
-        </select>
-      </div>
-    </div>
+  <div id="controls">
+    <button class="btn" id="startBtn">▶︎ 開始</button>
+    <span class="label">検出</span><input id="detectOn" type="checkbox" checked />
+    <span class="label">FOV°</span><input class="range" id="fov" type="range" min="45" max="85" value="60" />
+    <span class="label">読み上げ</span>
+    <select id="announceMode">
+      <option value="important">重要のみ（人・車・自転車・バス）</option>
+      <option value="people_vehicles">人＋乗り物</option>
+      <option value="all">すべて</option>
+    </select>
+    <span class="label">最大件数</span><input class="range" id="topK" type="range" min="1" max="3" value="1" />
   </div>
-
   <div id="gate">
     <div>
-      <h2 style="color:#39ff14">カメラへのアクセスが必要です</h2>
-      <button class="start" id="gateStart">開始 / START</button>
+      <h2 style="color:#39ff14;margin:0 0 6px">カメラへのアクセスが必要です</h2>
+      <p style="margin:0 0 12px">HTTPSで開いてください。開始で背面カメラ＋HUDが起動します。</p>
+      <button class="btn" id="gateStart">開始 / START</button>
     </div>
   </div>
 
 <script>
-  const video=document.getElementById('video');
-  const overlay=document.getElementById('overlay');
-  const octx=overlay.getContext('2d');
-  let model=null;
+const v=document.getElementById('v');
+const ov=document.getElementById('ov');
+const ctx=ov.getContext('2d');
+const toast=(m)=>{ const t=document.getElementById('toast'); t.textContent=m; t.style.display='block'; clearTimeout(toast._t); toast._t=setTimeout(()=>t.style.display='none', 2200); };
+let model=null, detTimer=null;
 
-  async function startCamera(){
-    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
-    video.srcObject=stream;
-    await video.play();
-    resizeOverlay();
-    window.addEventListener('resize',resizeOverlay);
-  }
-  function resizeOverlay(){overlay.width=video.clientWidth||window.innerWidth;overlay.height=video.clientHeight||window.innerHeight;}
+async function startCamera(){
+  if(!window.isSecureContext){ toast('⚠ HTTPSが必要です'); throw new Error('Insecure'); }
+  const stream=await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:false });
+  v.srcObject=stream; await new Promise(res=> v.onloadedmetadata=res); await v.play(); resize(); addEventListener('resize', resize); toast('📷 カメラ起動');
+}
+function resize(){ ov.width=v.clientWidth||innerWidth; ov.height=v.clientHeight||innerHeight; }
 
-  function toJa(cls){
-    const map={ person:'人', bicycle:'自転車', car:'車', motorcycle:'バイク', bus:'バス', truck:'トラック','traffic light':'信号'};
-    return map[cls]||cls;
-  }
-  function angleToText(ang){const deg=ang*180/Math.PI; if(deg<-15) return '左'; if(deg>15) return '右'; return '前方';}
+// ==== 日本語ラベル
+function toJa(cls){ const map={ person:'人', bicycle:'自転車', car:'車', motorcycle:'バイク', bus:'バス', truck:'トラック','traffic light':'信号', bench:'ベンチ', dog:'犬', cat:'猫', chair:'椅子', bottle:'ボトル', cup:'カップ', laptop:'ノートPC', cell_phone:'スマホ', suitcase:'スーツケース'}; return map[cls]||cls; }
+function angleToText(ang){ const d=ang*180/Math.PI; if(d<-15) return '左'; if(d>15) return '右'; return '前方'; }
 
-  const synth=window.speechSynthesis; let lastMap=new Map();
-  function speak(t){ if(synth.speaking) return; const u=new SpeechSynthesisUtterance(t); u.lang='ja-JP'; synth.speak(u);} 
-  function throttleSay(key,text){const now=performance.now(),cd=2000,last=lastMap.get(key)||0;if(now-last>cd){lastMap.set(key,now);speak(text);}}
+// ==== 距離推定（単眼近似）
+const TYPICAL_H={ person:1.7, bicycle:1.05, car:1.45, bus:3.0, truck:2.5, motorcycle:1.2, dog:0.5, cat:0.26, chair:0.9, bottle:0.25, cup:0.1, laptop:0.3, 'traffic light':0.6 };
+function focalPx(w,fovDeg){ const f=fovDeg*Math.PI/180; return (0.5*w)/Math.tan(f/2); }
+function estimateDistPx(bbox, cls){ const h=bbox[3]; const H=TYPICAL_H[cls]||0.3; if(h<=1) return null; const F=focalPx(ov.width, parseInt(document.getElementById('fov').value,10)); return (H*F)/h; }
 
-  function drawDetections(preds){
-    octx.clearRect(0,0,overlay.width,overlay.height);
-    const W=overlay.width; const fov=60*Math.PI/180;
-    const scored=preds.map(p=>{const[x,y,w,h]=p.bbox;const cx=x+w/2;const ang=((cx-W/2)/(W/2))*(fov/2);return{...p,ang};});
-    const mode=document.getElementById('announceMode').value;
-    const allow=(cls)=>{if(mode==='all') return true;const pv=['person','car','bicycle','bus','motorcycle','truck'];const imp=['person','car','bicycle','bus'];return mode==='people_vehicles'?pv.includes(cls):imp.includes(cls);};
-    let announced=0;const K=parseInt(document.getElementById('topK').value,10);
-    scored.sort((a,b)=>a.score-b.score);
-    scored.forEach(p=>{
-      const[x,y,w,h]=p.bbox; octx.strokeStyle='rgba(57,255,20,.9)'; octx.lineWidth=3;octx.strokeRect(x,y,w,h);
-      const tag=`${toJa(p.class)} ${(p.score*100|0)}% ${angleToText(p.ang)}`;
-      octx.fillStyle='rgba(0,0,0,.65)';octx.font='600 20px ui-monospace';
-      octx.fillText(tag,x,y-5);
-      if(announced<K&&allow(p.class)){throttleSay(`obj_${p.class}`,`${angleToText(p.ang)}、${toJa(p.class)}`);announced++;}
-    });
-  }
+// ==== 信号の色（赤/緑）
+function hsvFromRgb(r,g,b){ r/=255; g/=255; b/=255; const M=Math.max(r,g,b), m=Math.min(r,g,b); let h=0,s=0,v=M, d=M-m; s=M===0?0:d/M; if(M!==m){ switch(M){ case r:h=(g-b)/d+(g<b?6:0);break; case g:h=(b-r)/d+2;break; case b:h=(r-g)/d+4; } h/=6; } return {h:h*360,s,v}; }
+function redOrGreen(imgData){ const d=imgData.data; let rc=0,gc=0; for(let i=0;i<d.length;i+=4){ const h=hsvFromRgb(d[i],d[i+1],d[i+2]); if(h.v<0.2||h.s<0.35) continue; if(h.h<25||h.h>335) rc++; else if(h.h>75&&h.h<170) gc++; } if(rc+gc<50) return null; return rc>gc?'red':'green'; }
 
-  async function detectionLoop(){if(!model) return;const preds=await model.detect(video);drawDetections(preds);setTimeout(detectionLoop,800);}
+// ==== 音声（割込み無し・クールダウン）
+const synth=window.speechSynthesis; const lastMap=new Map();
+function speak(t){ if(synth.speaking) return; const u=new SpeechSynthesisUtterance(t); u.lang='ja-JP'; synth.speak(u); }
+function sayThrottle(key, text, cd=1800){ const now=performance.now(), last=lastMap.get(key)||0; if(now-last>cd){ lastMap.set(key, now); speak(text); } }
 
-  document.getElementById('gateStart').addEventListener('click',async()=>{
-    document.getElementById('gate').style.display='none';
-    await startCamera();
-    model=await cocoSsd.load({base:'lite_mobilenet_v2'});
-    detectionLoop();
+function drawDetections(preds){
+  ctx.clearRect(0,0,ov.width,ov.height);
+  const W=ov.width; const fov=parseInt(document.getElementById('fov').value,10)*Math.PI/180;
+  const K=parseInt(document.getElementById('topK').value,10)||1;
+  const mode=document.getElementById('announceMode').value;
+  const allow=(cls)=>{ if(mode==='all') return true; const pv=['person','car','bicycle','bus','motorcycle','truck']; const imp=['person','car','bicycle','bus']; return mode==='people_vehicles'? pv.includes(cls) : imp.includes(cls); };
+
+  const minScore=0.55;
+  const items = preds.filter(p=>p.score>=minScore).map(p=>{ const [x,y,w,h]=p.bbox; const cx=x+w/2; const ang=((cx-W/2)/(W/2))*(fov/2); const dist=estimateDistPx(p.bbox,p.class); return {...p, ang, dist}; });
+  items.sort((a,b)=>{ const da=a.dist??1e9, db=b.dist??1e9; return da-db; }); // 近い順
+
+  let said=0;
+  items.forEach(p=>{
+    const [x,y,w,h]=p.bbox; const yLabel=Math.max(28,y);
+    // 枠
+    ctx.strokeStyle='rgba(57,255,20,.95)'; ctx.lineWidth=3; ctx.strokeRect(x,y,w,h);
+    // 日本語・大きめラベル（距離+方向）
+    const dir=angleToText(p.ang); const dtxt = p.dist? ` ${p.dist.toFixed(1)}m` : '';
+    const tag = `${toJa(p.class)}${dtxt} ${dir}`;
+    ctx.font='600 22px ui-monospace,Menlo,Consolas,monospace';
+    const tw=ctx.measureText(tag).width+16; ctx.fillStyle='rgba(0,0,0,.7)'; ctx.fillRect(x, yLabel-28, tw, 28);
+    ctx.fillStyle='#39ff14'; ctx.fillText(tag, x+8, yLabel-7);
+
+    // 信号読み上げ（赤/青）
+    if(p.class==='traffic light'){
+      try{ const crop=ctx.getImageData(x,y,w,h); const col=redOrGreen(crop); if(col){ const msg = col==='red'? '信号は赤です。止まってください。' : '信号は青です。渡れます。'; const withD = p.dist? `${msg} およそ${p.dist.toFixed(1)}メートル前。` : msg; sayThrottle('tl_'+col, withD, 2500); } }catch(e){}
+    }
+
+    // 近い順に上位K件だけ読み上げ（対象クラスのみ）
+    if(said<K && allow(p.class)){
+      const distSay = p.dist? `${Math.max(0.5,p.dist).toFixed(1)}メートル` : '';
+      const t = `${dir}${distSay? '、'+distSay: ''}、${toJa(p.class)}`;
+      sayThrottle(`obj_${p.class}_${dir}`, t, 1500);
+      said++;
+    }
   });
+}
+
+async function detLoop(){ if(!document.getElementById('detectOn').checked || !model){ ctx.clearRect(0,0,ov.width,ov.height); return; } try{ const preds=await model.detect(v); drawDetections(preds); }catch(e){ console.warn(e); } detTimer=setTimeout(detLoop, 700); }
+
+// ==== Boot
+document.getElementById('gateStart').onclick = async()=>{ document.getElementById('gate').style.display='none'; try{ await startCamera(); toast('📦 モデル読込中…'); model=await cocoSsd.load({base:'lite_mobilenet_v2'}); toast('✅ 準備完了'); detLoop(); }catch(e){ toast('❌ 起動失敗: '+e.message); } };
 </script>
 </body>
 </html>
