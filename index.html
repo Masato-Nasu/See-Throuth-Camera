@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>視覚支援AR：方向（時計）、距離、物体を日本語で読み上げ</title>
   <meta name="description" content="最も近い対象を優先し、時計方向・距離・物体名を日本語で読み上げます。信号機の赤/青も対応。ラベルは大きく日本語で表示し、切れないよう自動調整。" />
-  <!-- 正しいCDN（余計な文字なし） -->
+  <!-- 正しいCDN（余計な文字を混ぜない） -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.19.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
   <style>
@@ -14,7 +14,13 @@
     #wrap{ position:fixed; inset:0; }
     video{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover }
     canvas{ position:absolute; inset:0; pointer-events:none }
-    #controls{ position:fixed; left:0; right:0; bottom:0; display:flex; flex-wrap:wrap; gap:10px; padding:8px calc(10px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left)); background:rgba(0,0,0,0.15); border-top:1px solid rgba(57,255,20,.25); overflow-x:auto; -webkit-overflow-scrolling:touch; z-index:5 }
+    #controls{
+      position:fixed; left:0; right:0; bottom:0;
+      display:flex; flex-wrap:wrap; gap:10px;
+      padding:8px calc(10px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
+      background:rgba(0,0,0,0.15); border-top:1px solid rgba(57,255,20,.25);
+      overflow-x:auto; -webkit-overflow-scrolling:touch; z-index:5
+    }
     .label{ color:var(--green); font-size:12px; margin:0 4px }
     .range, select, .btn{ border:1px solid rgba(57,255,20,.45); background:rgba(0,0,0,.25); color:var(--text); border-radius:10px; padding:6px 10px; white-space:nowrap }
     .btn{ cursor:pointer }
@@ -31,8 +37,8 @@
   </div>
   <div id="controls">
     <button class="btn" id="startBtn">▶︎ 開始</button>
-    <span class="label">検出</span><input id="detectOn" type="checkbox" checked />
-    <span class="label">FOV°</span><input class="range" id="fov" type="range" min="45" max="85" value="60" />
+    <!-- 検出チェックは撤去（常時検出） -->
+    <span class="label">FOV°</span><input class="range" id="fov" type="range" min="45" max="95" value="70" />
     <span class="label">読み上げ</span>
     <select id="announceMode">
       <option value="important">重要のみ（人・車・自転車・バス）</option>
@@ -56,11 +62,9 @@
   const ctx=ov.getContext('2d');
 
   const toast=(m)=>{
-    const t=document.getElementById('toast'); 
-    t.textContent=m; 
-    t.style.display='block'; 
-    clearTimeout(toast._t); 
-    toast._t=setTimeout(()=>t.style.display='none', 2400);
+    const t=document.getElementById('toast');
+    t.textContent=m; t.style.display='block';
+    clearTimeout(toast._t); toast._t=setTimeout(()=>t.style.display='none', 2400);
   };
 
   console.log('[A11yAR] boot');
@@ -132,71 +136,61 @@
 
   // ==== 時計方向テキスト（12時=正面、右回り）
   function angleToClock(ang){ // ang: ラジアン（左負/右正）
-    const deg = ang*180/Math.PI; // -90°..+90°想定
-    const off = Math.round(deg/30); // 30°で1時間
-    let hour = (12 + off)%12; if(hour===0) hour=12; 
+    const deg = ang*180/Math.PI;
+    const off = Math.round(deg/30); // 30°で1時間刻み
+    let hour = (12 + off)%12; if(hour===0) hour=12;
     return hour+'時方向';
   }
 
   // ==== 距離推定（単眼近似）
   const TYPICAL_H={ person:1.7, bicycle:1.05, car:1.45, bus:3.0, truck:2.5, motorcycle:1.2, dog:0.5, cat:0.26, chair:0.9, bottle:0.25, cup:0.1, laptop:0.3, 'traffic light':0.6, 'wine glass':0.18 };
   function focalPx(w,fovDeg){ const f=fovDeg*Math.PI/180; return (0.5*w)/Math.tan(f/2); }
-  function estimateDistPx(bbox, cls){ 
-    const h=bbox[3]; 
-    const H=TYPICAL_H[cls]||0.3; 
-    if(h<=1) return null; 
-    const W=(v.videoWidth||ov.width); 
-    const F=focalPx(W, parseInt(document.getElementById('fov').value,10)); 
-    return (H*F)/h; 
+  function estimateDistPx(bbox, cls){
+    const h=bbox[3]; const H=TYPICAL_H[cls]||0.3;
+    if(h<=1) return null;
+    const W=(v.videoWidth||ov.width);
+    const F=focalPx(W, parseInt(document.getElementById('fov').value,10));
+    return (H*F)/h;
   }
 
   // ==== 信号の色（赤/緑）
-  function hsvFromRgb(r,g,b){ 
-    r/=255; g/=255; b/=255; 
-    const M=Math.max(r,g,b), m=Math.min(r,g,b); 
-    let h=0,s=0,v=M, d=M-m; 
-    s=M===0?0:d/M; 
-    if(M!==m){ 
-      switch(M){ 
-        case r:h=(g-b)/d+(g<b?6:0);break; 
-        case g:h=(b-r)/d+2;break; 
-        case b:h=(r-g)/d+4; 
-      } 
-      h/=6; 
-    } 
-    return {h:h*360,s,v}; 
+  function hsvFromRgb(r,g,b){
+    r/=255; g/=255; b/=255;
+    const M=Math.max(r,g,b), m=Math.min(r,g,b);
+    let h=0,s=0,v=M, d=M-m; s=M===0?0:d/M;
+    if(M!==m){
+      switch(M){ case r:h=(g-b)/d+(g<b?6:0);break; case g:h=(b-r)/d+2;break; case b:h=(r-g)/d+4; }
+      h/=6;
+    }
+    return {h:h*360,s,v};
   }
-  function redOrGreen(imgData){ 
-    const d=imgData.data; let rc=0,gc=0; 
-    for(let i=0;i<d.length;i+=4){ 
-      const h=hsvFromRgb(d[i],d[i+1],d[i+2]); 
-      if(h.v<0.2||h.s<0.35) continue; 
-      if(h.h<25||h.h>335) rc++; 
-      else if(h.h>75&&h.h<170) gc++; 
-    } 
-    if(rc+gc<50) return null; 
-    return rc>gc?'red':'green'; 
+  function redOrGreen(imgData){
+    const d=imgData.data; let rc=0,gc=0;
+    for(let i=0;i<d.length;i+=4){
+      const h=hsvFromRgb(d[i],d[i+1],d[i+2]);
+      if(h.v<0.2||h.s<0.35) continue;
+      if(h.h<25||h.h>335) rc++; else if(h.h>75&&h.h<170) gc++;
+    }
+    if(rc+gc<50) return null;
+    return rc>gc?'red':'green';
   }
 
   // ==== 音声（割込み無し・クールダウン）
-  const synth=window.speechSynthesis; 
-  const lastMap=new Map();
+  const synth=window.speechSynthesis; const lastMap=new Map();
   function speak(t){ if(synth.speaking) return; const u=new SpeechSynthesisUtterance(t); u.lang='ja-JP'; u.rate=1; synth.speak(u); }
-  function sayThrottle(key, text, cd=1600){ 
-    const now=performance.now(), last=lastMap.get(key)||0; 
-    if(now-last>cd){ lastMap.set(key, now); speak(text); } 
-  }
+  function sayThrottle(key, text, cd=1600){ const now=performance.now(), last=lastMap.get(key)||0; if(now-last>cd){ lastMap.set(key, now); speak(text); } }
 
   function drawDetections(preds){
     ctx.clearRect(0,0,ov.width,ov.height);
-    const Wpx=(v.videoWidth||ov.width); 
-    const fov=parseInt(document.getElementById('fov').value,10)*Math.PI/180;
+    const Wpx=(v.videoWidth||ov.width);
+    const fovDeg=parseInt(document.getElementById('fov').value,10);
+    const fov=fovDeg*Math.PI/180; // 距離用（方向では使わない）
     const K=parseInt(document.getElementById('topK').value,10)||1;
     const mode=document.getElementById('announceMode').value;
     const allow=(cls)=>{
-      if(mode==='all') return true; 
-      const pv=['person','car','bicycle','bus','motorcycle','truck']; 
-      const imp=['person','car','bicycle','bus']; 
+      if(mode==='all') return true;
+      const pv=['person','car','bicycle','bus','motorcycle','truck'];
+      const imp=['person','car','bicycle','bus'];
       return mode==='people_vehicles'? pv.includes(cls) : imp.includes(cls);
     };
 
@@ -204,31 +198,32 @@
     const items = preds
       .filter(p=>p.score>=minScore)
       .map(p=>{
-        const [x,y,w,h]=p.bbox; 
-        const cx=x+w/2; 
-        const ang=((cx-Wpx/2)/(Wpx/2))*(fov/2); 
-        const dist=estimateDistPx(p.bbox,p.class); 
-        return {...p, ang, dist}; 
+        const [x,y,w,h]=p.bbox;
+        const cx=x+w/2;
+        // 方位は画面幅ベースで ±90° に固定（FOV非依存）
+        const ang=((cx - Wpx/2)/(Wpx/2))*(Math.PI/2);
+        const dist=estimateDistPx(p.bbox,p.class);
+        return {...p, ang, dist};
       })
-      .sort((a,b)=>{ 
-        const da=a.dist??1e9, db=b.dist??1e9; 
-        if(da!==db) return da-db; 
-        return b.score-a.score; 
+      .sort((a,b)=>{
+        const da=a.dist??1e9, db=b.dist??1e9;
+        if(da!==db) return da-db;
+        return b.score-a.score;
       });
 
     let said=0;
     items.forEach(p=>{
       const [x,y,w,h]=p.bbox;
-      const tagDir=angleToClock(p.ang); 
+      const tagDir=angleToClock(p.ang);
       const dtxt = p.dist? ` ${p.dist.toFixed(1)}m` : '';
       const tagText = `${tagDir} ${toJa(p.class)}${dtxt}`;
 
       // ラベル位置は切れないようクランプ
       ctx.font='600 22px ui-monospace,Menlo,Consolas,monospace';
-      const textW=ctx.measureText(tagText).width+16; 
+      const textW=ctx.measureText(tagText).width+16;
       const padH=28;
       let lx = Math.min(Math.max(x, 4), ov.width - textW - 4);
-      let ly = (y>=32)? y-4 : y+h+padH+4; 
+      let ly = (y>=32)? y-4 : y+h+padH+4;
       if(ly+(-padH) < 0) ly = y+h+padH+4;
 
       // 枠とラベル
@@ -239,13 +234,13 @@
       // 信号読み上げ
       if(p.class==='traffic light'){
         try{
-          const crop=ctx.getImageData(x,y,w,h); 
-          const col=redOrGreen(crop); 
-          if(col){ 
-            const msg = col==='red'? '信号は赤です。止まってください。' : '信号は青です。渡れます。'; 
-            const withD = `${angleToClock(p.ang)}、${p.dist? (Math.max(0.5,p.dist).toFixed(1)+'メートル、') : ''}${msg}`; 
-            sayThrottle('tl_'+col, withD, 2400); 
-          } 
+          const crop=ctx.getImageData(x,y,w,h);
+          const col=redOrGreen(crop);
+          if(col){
+            const msg = col==='red'? '信号は赤です。止まってください。' : '信号は青です。渡れます。';
+            const withD = `${angleToClock(p.ang)}、${p.dist? (Math.max(0.5,p.dist).toFixed(1)+'メートル、') : ''}${msg}`;
+            sayThrottle('tl_'+col, withD, 2400);
+          }
         }catch(e){}
       }
 
@@ -261,25 +256,20 @@
     });
   }
 
-  async function detLoop(){ 
-    if(!document.getElementById('detectOn').checked || !model){ 
-      ctx.clearRect(0,0,ov.width,ov.height); 
-      return; 
-    } 
-    try{ 
-      const preds=await model.detect(v); 
-      drawDetections(preds); 
-    }catch(e){ 
-      console.warn(e); 
-    } 
-    detTimer=setTimeout(detLoop, 600); 
+  async function detLoop(){
+    if(!model){ ctx.clearRect(0,0,ov.width,ov.height); return; } // 常時検出（チェック不要）
+    try{
+      const preds=await model.detect(v);
+      drawDetections(preds);
+    }catch(e){ console.warn(e); }
+    detTimer=setTimeout(detLoop, 600);
   }
 
-  // FOVスライダー：即時反映＆簡易通知
+  // FOVスライダー：距離補正のみ反映（方向には使わない）
   const fovEl=document.getElementById('fov');
   fovEl.addEventListener('input',()=>{
-    toast('FOV '+fovEl.value+'°'); 
-    sayThrottle('fov_notice','距離補正を更新しました。',1200); 
+    toast('FOV '+fovEl.value+'°');
+    sayThrottle('fov_notice','距離補正を更新しました。',1200);
     if(model) { model.detect(v).then(drawDetections).catch(()=>{}); }
   });
 
