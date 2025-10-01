@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>視覚支援AR：黄線ガイド / 信号 / 障害物 読み上げ</title>
-  <meta name="description" content="黄色い誘導ブロックをなぞるガイド、信号機の赤/青、前方障害物（人・車など）を日本語で読み上げ表示します。" />
+  <title>視覚支援AR：点字ブロックガイド / 信号 / 障害物 読み上げ</title>
+  <meta name="description" content="点字ブロック（線状・点状）を検出して進行方向を案内。信号機の赤/青、前方の障害物も日本語で読み上げます。" />
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.19.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
   <style>
@@ -65,14 +65,13 @@
 
   let model=null, detTimer=null;
 
-  // ===== Utilities
+  // ===== Utils
   const synth=window.speechSynthesis; const lastMap=new Map();
   function speak(t){ if(synth.speaking) return; const u=new SpeechSynthesisUtterance(t); u.lang='ja-JP'; u.rate=1; synth.speak(u); }
   function sayThrottle(key, text, cd=1600){ const now=performance.now(), last=lastMap.get(key)||0; if(now-last>cd){ lastMap.set(key, now); speak(text); } }
-
   function resize(){ const w=v.videoWidth||v.clientWidth||innerWidth; const h=v.videoHeight||v.clientHeight||innerHeight; ov.width=w; ov.height=h; }
-
   function angleToClock(ang){ const deg=ang*180/Math.PI; const off=Math.round(deg/30); let hour=(12+off)%12; if(hour===0) hour=12; return hour+'時方向'; }
+
   const TYPICAL_H={ person:1.7, bicycle:1.05, car:1.45, bus:3.0, truck:2.5, motorcycle:1.2, dog:0.5, cat:0.26, chair:0.9, bottle:0.25, cup:0.1, laptop:0.3, 'traffic light':0.6, 'wine glass':0.18 };
   function focalPx(w,fovDeg){ const f=fovDeg*Math.PI/180; return (0.5*w)/Math.tan(f/2); }
   function estimateDistPx(bbox, cls){ const h=bbox[3]; const H=TYPICAL_H[cls]||0.3; if(h<=1) return null; const W=(v.videoWidth||ov.width); const F=focalPx(W, parseInt(document.getElementById('fov').value,10)); return (H*F)/h; }
@@ -115,117 +114,146 @@
     return map[cls]||cls;
   }
 
-  // ===== Yellow line (tactile paving) detection & guide
-  function detectYellowGuide(){
-    // 画像を低解像度へ
+  // ===== 点字ブロック専用 検出（線状/点状）
+  function detectTactileGuide(){
     const W = ov.width, H = ov.height;
     const pw = proc.width, ph = proc.height;
+
+    // 下半分を低解像度へ
     pctx.drawImage(v, 0, 0, pw, ph);
     const img = pctx.getImageData(0, 0, pw, ph);
     const d = img.data;
 
-    // HSVで黄色抽出 (H: 25..60°, S>0.4, V>0.4)
+    // 1) 黄色マスク（やや厳しめ） H:32..58°, S>0.45, V>0.45
+    const mask = new Uint8Array(pw*ph);
+    const yStart = (ph*0.42)|0;
     const pts = [];
-    const yStart = Math.floor(ph*0.45); // 下半分中心に
     for(let y=yStart; y<ph; y++){
       for(let x=0; x<pw; x++){
         const i = (y*pw + x)*4;
-        const {h,s,v} = hsvFromRgb(d[i], d[i+1], d[i+2]);
-        if(h>25 && h<60 && s>0.4 && v>0.4){
-          pts.push([x,y]);
+        const r=d[i], g=d[i+1], b=d[i+2];
+        const M=Math.max(r,g,b)/255, m=Math.min(r,g,b)/255;
+        const v=M, s=M===0?0:(M-m)/M;
+        let h=0;
+        if(M!==m){
+          if(M===r/255) h=((g-b)/(M-m)+(g<b?6:0))/6;
+          else if(M===g/255) h=((b-r)/(M-m)+2)/6;
+          else h=((r-g)/(M-m)+4)/6;
+        }
+        h*=360;
+        if(h>32 && h<58 && s>0.45 && v>0.45){
+          mask[y*pw+x]=1; pts.push([x,y]);
         }
       }
     }
-    if(pts.length<120) return null; // 少なすぎ
+    if(pts.length < 150) return null;
 
-    // 単純な直線当てはめ（最小二乗: x = a*y + b）
+    // 2) 線状ブロック仮説：x = a*y + b
     let sumY=0,sumX=0,sumYY=0,sumYX=0;
     for(const [x,y] of pts){ sumY+=y; sumX+=x; sumYY+=y*y; sumYX+=y*x; }
-    const n=pts.length;
-    const denom = (n*sumYY - sumY*sumY)||1;
-    const a = (n*sumYX - sumY*sumX)/denom;
-    const b = (sumX - a*sumY)/n;
+    const n=pts.length, denom=(n*sumYY - sumY*sumY)||1;
+    const a=(n*sumYX - sumY*sumX)/denom, b=(sumX - a*sumY)/n;
 
-    // 画面座標へ射影
-    const y1 = Math.floor(H*0.55), y2 = H-4;
-    const scaleX = W/pw, scaleY = H/ph;
-    const x1 = (a*(y1/scaleY)+b)*scaleX;
-    const x2 = (a*(y2/scaleY)+b)*scaleX;
+    // 帯幅（半幅）を推定
+    let acc=0, cnt=0;
+    for(const [x,y] of pts){ const xOn=a*y+b; acc+=Math.abs(x-xOn); cnt++; }
+    const bandPx = (acc/cnt);
+    const bandPxScaled = bandPx * (W/pw);
+    const minBand = H*0.01, maxBand = H*0.10;
+    const looksLikeBand = (bandPxScaled>minBand && bandPxScaled<maxBand);
 
-    // 方位（±90°固定）
-    const cx = (x1+x2)/2;
-    const ang = ((cx - W/2) / (W/2)) * (Math.PI/2);
+    // 3) リブ周期チェック（簡易自己相関）
+    function autocorr(sig, minLag, maxLag){
+      let bestLag=minLag, bestScore=0;
+      for(let lag=minLag; lag<=maxLag; lag++){
+        let num=0, den1=0, den2=0;
+        for(let i=0;i<sig.length-lag;i++){
+          const a=sig[i]-0.5, b=sig[i+lag]-0.5;
+          num+=a*b; den1+=a*a; den2+=b*b;
+        }
+        const s = num / Math.sqrt((den1||1)*(den2||1));
+        if(s>bestScore){ bestScore=s; bestLag=lag; }
+      }
+      return {bestLag, bestScore};
+    }
+    const ny = 1/Math.sqrt(1+a*a), nx = -a*ny; // 法線ベクトル（proc座標）
+    let stripeScoreSum=0, stripeCnt=0;
+    for(let sy=ph*0.55|0; sy<ph-4; sy+=Math.max(6, bandPx|0)){
+      const sx = a*sy + b;
+      const half = Math.max(8, Math.min(24, (bandPx*3)|0));
+      const L = half*2+1;
+      const prof = new Float32Array(L);
+      for(let t=-half, k=0; t<=half; t++, k++){
+        const px = sx + nx*t, py = sy + ny*t;
+        const ix = Math.max(0, Math.min(pw-1, Math.round(px)));
+        const iy = Math.max(0, Math.min(ph-1, Math.round(py)));
+        prof[k] = mask[iy*pw+ix] ? 1 : 0;
+      }
+      const {bestScore} = autocorr(prof, 2, 12); // 2〜12px 周期
+      if(bestScore>0.28){ stripeScoreSum += bestScore; stripeCnt++; }
+    }
+    const ribbedOK = stripeCnt>0 && (stripeScoreSum/stripeCnt) > 0.30;
 
-    return {x1,y1,x2,y2,ang};
-  }
-
-  // ===== Simple “opening” (door/window-like) heuristic using edges
-  function detectOpeningLike(){
-    // 低解像度でエッジ量を見て大きめの長方形を推定
-    const pw=proc.width, ph=proc.height;
+    // 4) 点状ブロック（交差点）判定：遷移密度
     pctx.drawImage(v, 0, 0, pw, ph);
-    const img = pctx.getImageData(0, 0, pw, ph);
-    const d = img.data;
+    const gray = new Uint8Array(pw*ph);
+    const dd = pctx.getImageData(0,0,pw,ph).data;
+    for(let i=0,j=0;i<dd.length;i+=4,j++) gray[j]=(dd[i]*0.299+dd[i+1]*0.587+dd[i+2]*0.114)|0;
 
-    // Sobel 簡易
-    const gray = new Uint8ClampedArray(pw*ph);
-    for(let i=0, j=0;i<d.length;i+=4, j++) gray[j] = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114)|0;
-
-    const mag = new Uint16Array(pw*ph);
-    const kx=[-1,0,1,-2,0,2,-1,0,1], ky=[-1,-2,-1,0,0,0,1,2,1];
-    for(let y=1;y<ph-1;y++){
-      for(let x=1;x<pw-1;x++){
-        let sx=0, sy=0, t=0;
-        for(let yy=-1;yy<=1;yy++) for(let xx=-1;xx<=1;xx++){
-          const v=gray[(y+yy)*pw + (x+xx)];
-          sx += v * kx[++t-1]; sy += v * ky[t-1];
+    let dotScore=0, areaCnt=0, y0=(ph*0.55)|0, y1=(ph*0.85)|0, x0=(pw*0.25)|0, x1=(pw*0.75)|0;
+    for(let y=y0;y<y1;y+=2){
+      for(let x=x0;x<x1;x+=2){
+        const m = mask[y*pw+x];
+        if(m){
+          let transitions=0;
+          const nbr=[-1,0,1, -pw, pw];
+          for(const off of nbr){
+            const nxy = (y*pw+x)+off;
+            if(nxy>0 && nxy<pw*ph && mask[nxy]!==m) transitions++;
+          }
+          if(transitions>=2) dotScore++;
         }
-        const m = Math.min(1023, Math.abs(sx)+Math.abs(sy));
-        mag[y*pw+x]=m;
+        areaCnt++;
       }
     }
+    const areaRatio = pts.length / (pw*ph);
+    const dotsOK = (dotScore>200 && areaRatio>0.04);
 
-    // 中央〜上部に大きい矩形があれば「開口部らしきもの」
-    const y0 = Math.floor(ph*0.25), y1 = Math.floor(ph*0.70);
-    const x0 = Math.floor(pw*0.20), x1 = Math.floor(pw*0.80);
-    let best=null, bestScore=0;
-    for(let y=y0; y<y1-20; y+=4){
-      for(let x=x0; x<x1-20; x+=4){
-        const w=40, h=50;
-        let sum=0;
-        for(let yy=0; yy<h; yy+=2){
-          for(let xx=0; xx<w; xx+=2){ sum += mag[(y+yy)*pw + (x+xx)]>180?1:0; }
-        }
-        if(sum>bestScore && sum>250){ best={x,y,w,h}; bestScore=sum; }
-      }
-    }
-    if(!best) return null;
-    // 画面へスケール
-    const sx=ov.width/pw, sy=ov.height/ph;
-    return {x:best.x*sx, y:best.y*sy, w:best.w*sx, h:best.h*sy};
+    const tactileOK = (looksLikeBand && ribbedOK) || dotsOK;
+    if(!tactileOK) return null;
+
+    // 画面へ射影（ガイド線2点）
+    const y1s = (H*0.55)|0, y2s = H-4;
+    const scaleX = W/pw, scaleY = H/ph;
+    const x1s = (a*(y1s/scaleY) + b) * scaleX;
+    const x2s = (a*(y2s/scaleY) + b) * scaleX;
+
+    const cx = (x1s+x2s)/2;
+    const ang = ((cx - W/2) / (W/2)) * (Math.PI/2); // 方位は±90°固定
+
+    return {x1:x1s, y1:y1s, x2:x2s, y2:y2s, ang};
   }
 
-  // ===== Main detection draw
+  // ===== メイン描画
   function drawDetections(preds){
     ctx.clearRect(0,0,ov.width,ov.height);
 
-    // 1) 黄線ガイド
-    const guide = detectYellowGuide();
+    // 1) 点字ブロックガイド
+    const guide = detectTactileGuide();
     if(guide){
       ctx.lineWidth=8; ctx.strokeStyle='rgba(255,212,0,0.9)';
       ctx.beginPath(); ctx.moveTo(guide.x1, guide.y1); ctx.lineTo(guide.x2, guide.y2); ctx.stroke();
 
-      // 方向ガイダンス
       const tag = angleToClock(guide.ang);
       ctx.font='700 24px ui-monospace,Menlo,Consolas,monospace';
-      const txt = `黄線：${tag} に延びています`;
+      const txt = `点字ブロック：${tag} に延びています`;
       const tw = ctx.measureText(txt).width+16;
       ctx.fillStyle='rgba(0,0,0,.65)'; ctx.fillRect(8, 8, tw, 30);
       ctx.fillStyle='var(--guide)'; ctx.fillText(txt, 16, 30);
-      sayThrottle('yellow', `${tag}に黄色い線。なぞって進めます。`, 2000);
+      sayThrottle('yellow', `${tag}に点字ブロック。なぞって進めます。`, 2000);
     }
 
-    // 2) COCO-SSD 検出（障害物・信号）
+    // 2) COCO-SSD（障害物/信号）
     const Wpx=(v.videoWidth||ov.width);
     const K=parseInt(document.getElementById('topK').value,10)||1;
     const mode=document.getElementById('announceMode').value;
@@ -253,7 +281,7 @@
       // 枠
       ctx.strokeStyle='rgba(57,255,20,.95)'; ctx.lineWidth=3; ctx.strokeRect(x,y,w,h);
 
-      // ラベル（時計方向＋物体＋距離）
+      // ラベル
       const tagDir=angleToClock(p.ang); const dtxt = p.dist? ` ${p.dist.toFixed(1)}m` : '';
       const tagText = `${tagDir} ${toJa(p.class)}${dtxt}`;
       ctx.font='600 22px ui-monospace,Menlo,Consolas,monospace';
@@ -297,16 +325,9 @@
       }
     });
 
-    // 前方ROI表示（薄い枠／目安）
+    // 前方ROI可視化
     ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=2;
     ctx.strokeRect(forwardROI.x, forwardROI.y, forwardROI.w, forwardROI.h);
-
-    // 3) 出入口（開口部）らしきもの
-    const opening = detectOpeningLike();
-    if(opening){
-      ctx.strokeStyle='rgba(255,200,0,.9)'; ctx.lineWidth=3; ctx.strokeRect(opening.x, opening.y, opening.w, opening.h);
-      sayThrottle('opening', '前方に出入口らしき開口。', 2500);
-    }
   }
 
   async function detLoop(){
@@ -332,7 +353,7 @@
     else { toast('⚠ モデル読み込み不可：カメラのみ動作（ネット/CDNを確認）'); }
   }
   document.getElementById('gateStart').onclick = ()=>{ startAll().catch(e=>console.error(e)); };
-  document.getElementById('startBtn').onclick = ()=>{ startAll().catch(e=>console.error(e)); };
+  document.getElementById('startBtn').onclick   = ()=>{ startAll().catch(e=>console.error(e)); };
 })();
 </script>
 </body>
