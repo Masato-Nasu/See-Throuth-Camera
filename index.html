@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-<title>視覚ガイド SAFE+STABLE+FIX（モデル未準備ガード）</title>
+<title>視覚ガイド（ドア検出＋5m安全アナウンス版）</title>
 <style>
   html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui, -apple-system, Segoe UI, Roboto, 'Hiragino Kaku Gothic ProN', Meiryo, sans-serif}
   #root{position:fixed;inset:0}
@@ -27,7 +27,8 @@
 
 <div id="hud">
   <button id="btn" disabled>開始</button>
-  <label><input type="checkbox" id="chkTactile"> 点字ブロック検出（負荷あり）</label>
+  <label><input type="checkbox" id="chkTactile"> 点字ブロック（負荷あり）</label>
+  <label><input type="checkbox" id="chkDoor" checked> ドア検出（試験）</label>
   <label>最大件数 <input type="range" id="maxItems" min="1" max="8" value="4"></label>
   <span class="badge" id="badge">準備中…</span>
 </div>
@@ -37,22 +38,13 @@
 <script src="https://docs.opencv.org/4.x/opencv.js" async></script>
 <script>
 const logEl = document.getElementById('debug');
-function logOnce(key, ...args){
-  if(!logOnce._set) logOnce._set = new Set();
-  if(logOnce._set.has(key)) return;
-  logOnce._set.add(key);
-  const t = new Date().toLocaleTimeString();
-  logEl.textContent += `[${t}] ` + args.join(' ') + '\\n';
-  logEl.scrollTop = logEl.scrollHeight;
-}
-function log(...args){
-  const t = new Date().toLocaleTimeString();
-  logEl.textContent += `[${t}] ` + args.join(' ') + '\\n';
-  logEl.scrollTop = logEl.scrollHeight;
-}
+function logOnce(key, ...args){ if(!logOnce._set) logOnce._set=new Set(); if(logOnce._set.has(key)) return; logOnce._set.add(key); const t=new Date().toLocaleTimeString(); logEl.textContent += `[${t}] ` + args.join(' ') + '\\n'; logEl.scrollTop = logEl.scrollHeight; }
+function log(...args){ const t=new Date().toLocaleTimeString(); logEl.textContent += `[${t}] ` + args.join(' ') + '\\n'; logEl.scrollTop = logEl.scrollHeight; }
+
 const badge = document.getElementById('badge');
 const btn = document.getElementById('btn');
 const chkTactile = document.getElementById('chkTactile');
+const chkDoor = document.getElementById('chkDoor');
 const maxItems = document.getElementById('maxItems');
 
 const video = document.getElementById('video');
@@ -65,8 +57,7 @@ let running=false, model=null, cvReady=false, allReady=false;
 (async()=>{
   try{
     await tf.setBackend('webgl').catch(async ()=>{ log('webgl backend failed -> cpu'); await tf.setBackend('cpu'); });
-    await tf.ready();
-    log('TFJS backend:', tf.getBackend());
+    await tf.ready(); log('TFJS backend:', tf.getBackend());
   }catch(e){ log('TFJS init error:', e); }
 })();
 
@@ -81,46 +72,113 @@ const cvReadyPromise = new Promise(res=>{
 
 async function initCamera(){
   const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment', width:{ideal:1280}, height:{ideal:720} }, audio:false });
-  video.srcObject = stream; await video.play(); resize();
-  log('Camera initialized', video.videoWidth+'x'+video.videoHeight);
+  video.srcObject = stream; await video.play(); resize(); log('Camera initialized', video.videoWidth+'x'+video.videoHeight);
 }
 function resize(){ view.width = video.videoWidth || view.clientWidth; view.height = video.videoHeight || view.clientHeight; }
 window.addEventListener('resize', resize);
 
 // ===== TTS（クールダウン） =====
-const READ_OVERRIDES = new Map([['方向','ほうこう'],['信号','しんごう'],['横断歩道','おうだんほどう']]);
+const READ_OVERRIDES = new Map([['方向','ほうこう'],['信号','しんごう'],['横断歩道','おうだんほどう'],['進行方向','しんこうほうこう']]);
 const cooldownMs = 3000; let lastSpeakAt = {};
 function normalizeReading(s){ for(const [k,v] of READ_OVERRIDES) s=s.replaceAll(k,v); return s; }
 function speakThrottled(text, key){
-  const now = Date.now();
+  const now=Date.now();
   if (speechSynthesis.speaking) return;
   if (lastSpeakAt[key] && (now - lastSpeakAt[key] < cooldownMs)) return;
-  lastSpeakAt[key] = now;
-  try{ const u = new SpeechSynthesisUtterance(normalizeReading(text)); u.lang='ja-JP'; speechSynthesis.speak(u); }catch(e){}
+  lastSpeakAt[key]=now;
+  try{ const u=new SpeechSynthesisUtterance(normalizeReading(text)); u.lang='ja-JP'; speechSynthesis.speak(u); }catch(e){}
 }
 
 // ===== Helper =====
-function bearingLabel(cx, cy, W, H){ const dx = cx - W/2, dy = H/2 - cy; let deg=(Math.atan2(dy,dx)*180/Math.PI+360)%360; const hour=Math.round(deg/30)||12; return `${hour}じ`; }
+function bearingLabel(cx, cy, W, H){ const dx=cx-W/2, dy=H/2-cy; let deg=(Math.atan2(dy,dx)*180/Math.PI+360)%360; const hour=Math.round(deg/30)||12; return `${hour}じ`; }
 function estDistanceMeters(w,h,W,H){ const areaRatio=(w*h)/(W*H); return Math.min(10, Math.max(0.3, 0.6/Math.sqrt(Math.max(areaRatio,1e-6)))); }
 const LABEL_JA = {'person':'人','bicycle':'自転車','car':'車','bus':'バス','motorcycle':'バイク','truck':'トラック','laptop':'ノートパソコン','mouse':'マウス','backpack':'リュックサック','traffic light':'信号機'};
 
 // ===== 点字ブロック（軽量） =====
 function detectTactileSimple(srcRGBA){
   if(!cvReady) return [];
-  let gray = new cv.Mat(); cv.cvtColor(srcRGBA, gray, cv.COLOR_RGBA2GRAY); let mean = cv.mean(gray)[0]; gray.delete();
-  if(mean < 40) return [];
+  let gray=new cv.Mat(); cv.cvtColor(srcRGBA,gray,cv.COLOR_RGBA2GRAY); let mean=cv.mean(gray)[0]; gray.delete(); if(mean<40) return [];
   let rgb=new cv.Mat(); cv.cvtColor(srcRGBA,rgb,cv.COLOR_RGBA2RGB);
   let hsv=new cv.Mat(); cv.cvtColor(rgb,hsv,cv.COLOR_RGB2HSV); rgb.delete();
-  let lo=new cv.Mat(hsv.rows,hsv.cols,hsv.type(), [18,140,120,0]);
-  let hi=new cv.Mat(hsv.rows,hsv.cols,hsv.type(), [36,255,255,255]);
+  let lo=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[18,140,120,0]); let hi=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[36,255,255,255]);
   let mask=new cv.Mat(); cv.inRange(hsv,lo,hi,mask); lo.delete(); hi.delete(); hsv.delete();
-  const h = mask.rows, w = mask.cols; const floorH = Math.floor(h*0.4);
-  let roiMask = new cv.Mat.zeros(h,w,cv.CV_8UC1); roiMask.roi(new cv.Rect(0,h-floorH,w,floorH)).setTo(new cv.Scalar(255));
+  const h=mask.rows,w=mask.cols; const floorH=Math.floor(h*0.4);
+  let roiMask=new cv.Mat.zeros(h,w,cv.CV_8UC1); roiMask.roi(new cv.Rect(0,h-floorH,w,floorH)).setTo(new cv.Scalar(255));
   cv.bitwise_and(mask,roiMask,mask); roiMask.delete();
-  let k = cv.Mat.ones(5,5,cv.CV_8U); cv.morphologyEx(mask,mask,cv.MORPH_OPEN,k); cv.morphologyEx(mask,mask,cv.MORPH_CLOSE,k); k.delete();
+  let k=cv.Mat.ones(5,5,cv.CV_8U); cv.morphologyEx(mask,mask,cv.MORPH_OPEN,k); cv.morphologyEx(mask,mask,cv.MORPH_CLOSE,k); k.delete();
   let contours=new cv.MatVector(), hier=new cv.Mat(); cv.findContours(mask,contours,hier,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE); mask.delete(); hier.delete();
-  let out=[]; for(let i=0;i<contours.size();i++){ let r=cv.boundingRect(contours.get(i)); const ar=(r.width*r.height)/(w*h); const aspect=r.width>r.height ? r.width/(r.height+1e-6) : r.height/(r.width+1e-6); if(ar>0.002 && ar<0.2 && aspect>1.2 && aspect<6.0){ out.push({x:r.x,y:r.y,w:r.width,h:r.height,label:'点字ブロック'}); } }
-  contours.delete(); return out;
+  let out=[]; for(let i=0;i<contours.size();i++){ let r=cv.boundingRect(contours.get(i)); const ar=(r.width*r.height)/(w*h); const aspect=r.width>r.height?r.width/(r.height+1e-6):r.height/(r.width+1e-6); if(ar>0.002 && ar<0.2 && aspect>1.2 && aspect<6.0){ out.push({x:r.x,y:r.y,w:r.width,h:r.height,label:'点字ブロック'}); } } contours.delete(); return out;
+}
+
+// ===== ドア検出（縦の平行ライン・暗い開口の矩形をヒューリスティックで推定） =====
+function detectDoorHeuristic(srcRGBA){
+  if(!cvReady) return [];
+  const W=srcRGBA.cols, H=srcRGBA.rows;
+  // 上半分も見る（室内のドアは画面上側に枠が来やすい）
+  let roi = srcRGBA.roi(new cv.Rect(0, 0, W, H));
+  let gray=new cv.Mat(); cv.cvtColor(roi,gray,cv.COLOR_RGBA2GRAY);
+  cv.equalizeHist(gray, gray);
+  let edges=new cv.Mat(); cv.Canny(gray,edges,60,120);
+
+  // HoughLinesP で直線、ほぼ垂直を抽出
+  let lines=new cv.Mat();
+  cv.HoughLinesP(edges, lines, 1, Math.PI/180, 60, H*0.35, 20);
+  gray.delete(); edges.delete();
+
+  let verticals=[]; // {x1,y1,x2,y2,len,x}
+  for(let i=0;i<lines.rows;i++){
+    const x1=lines.data32S[i*4], y1=lines.data32S[i*4+1], x2=lines.data32S[i*4+2], y2=lines.data32S[i*4+3];
+    const dx = Math.abs(x2-x1), dy = Math.abs(y2-y1);
+    if(dy>dx*4 && dy>H*0.45){ // ほぼ垂直＆十分長い
+      verticals.push({x1,y1,x2,y2,len:dy,x:(x1+x2)/2});
+    }
+  }
+  lines.delete();
+  if(verticals.length<2){ return []; }
+
+  // x位置でソートして近いペアを探す（ドア幅は画面幅の8%〜25%想定）
+  verticals.sort((a,b)=>a.x-b.x);
+  let doors=[];
+  for(let i=0;i<verticals.length-1;i++){
+    const a = verticals[i], b = verticals[i+1];
+    const gap = Math.abs(b.x - a.x);
+    if(gap < W*0.08 || gap > W*0.25) continue;
+    // y の重なりが大きい
+    const top = Math.max(Math.min(a.y1,a.y2), Math.min(b.y1,b.y2));
+    const bot = Math.min(Math.max(a.y1,a.y2), Math.max(b.y1,b.y2));
+    if(bot - top < H*0.45) continue;
+    // 内側の平均輝度が外側より暗い → 開口
+    const x = Math.max(0, Math.floor(Math.min(a.x,b.x)));
+    const w = Math.min(W-x, Math.floor(gap));
+    const y = Math.max(0, Math.floor(top));
+    const h = Math.min(H-y, Math.floor(bot-top));
+    if(w<10 || h<10) continue;
+
+    try{
+      const inner = roi.roi(new cv.Rect(x, y, w, h));
+      let ig=new cv.Mat(); cv.cvtColor(inner, ig, cv.COLOR_RGBA2GRAY);
+      const inside = cv.mean(ig)[0];
+      ig.delete(); inner.delete();
+
+      const margin = Math.max(2, Math.floor(W*0.02));
+      const leftX = Math.max(0, x - margin);
+      const rightX = Math.min(W-1, x + w + 1);
+      const outerW = Math.min(W-leftX, Math.max(1, margin));
+      const outerW2 = Math.min(W-rightX, Math.max(1, margin));
+      let leftR = roi.roi(new cv.Rect(leftX, y, outerW, Math.max(1,h)));
+      let rightR = roi.roi(new cv.Rect(rightX, y, outerW2, Math.max(1,h)));
+      let lg=new cv.Mat(); let rg=new cv.Mat();
+      cv.cvtColor(leftR, lg, cv.COLOR_RGBA2GRAY); cv.cvtColor(rightR, rg, cv.COLOR_RGBA2GRAY);
+      const outside = (cv.mean(lg)[0] + cv.mean(rg)[0]) / 2;
+      lg.delete(); rg.delete(); leftR.delete(); rightR.delete();
+
+      if(inside + 10 < outside){ // 内側が外側より暗い
+        doors.push({x, y, w, h, label:'ドア（推定）'});
+      }
+    }catch(e){ /* ROIがはみ出す場合のガード */ }
+  }
+  roi.delete();
+  return doors;
 }
 
 // ===== 安定化 =====
@@ -129,13 +187,16 @@ function iou(a,b){ const x1=Math.max(a.x,b.x), y1=Math.max(a.y,b.y); const x2=Ma
 function stabilize(dets){
   const now=performance.now();
   dets.forEach(d=>{ let m=trackBuf.find(t=>t.label===d.label && iou(t,d)>0.5); if(m){ m.x=d.x; m.y=d.y; m.w=d.w; m.h=d.h; m.count=Math.min(m.count+1,5); m.ts=now; } else { trackBuf.push({...d,count:1,ts:now}); } });
-  trackBuf = trackBuf.filter(t=> now - t.ts < 800);
+  trackBuf = trackBuf.filter(t=> now - t.ts < 900);
   return trackBuf.filter(t=> t.count>=3);
 }
 
 // ===== メインループ =====
 let offscreen = document.createElement('canvas'); let ofx = offscreen.getContext('2d');
 let warnedModelNotReady = false;
+let clearFrames = 0; // 中央5mクリアの持続フレーム
+
+function centerAngleDeg(cx, cy, W, H){ const dx=cx-W/2, dy=H/2-cy; let deg=(Math.atan2(dy,dx)*180/Math.PI+360)%360; return deg; }
 
 async function runLoop(){
   if(!running) return;
@@ -143,41 +204,29 @@ async function runLoop(){
   const W=view.width, H=view.height;
   ctx.drawImage(video,0,0,W,H);
 
-  // モデル未準備ガード
   if(!model){
-    if(!warnedModelNotReady){ logOnce('model-not-ready', 'モデルがまだ準備できていません。少し待ってから再試行します。'); warnedModelNotReady=true; }
-    requestAnimationFrame(runLoop);
-    return;
+    if(!warnedModelNotReady){ logOnce('model-not-ready','モデル準備待ち…'); warnedModelNotReady=true; }
+    requestAnimationFrame(runLoop); return;
   }
 
-  // downscale for detection
   const infW=320, infH=Math.max(1, Math.floor(H*(320/Math.max(1,W))));
   offscreen.width=infW; offscreen.height=infH;
   ofx.drawImage(video,0,0,infW,infH);
 
   let t0=performance.now();
   let detections=[];
-  try{
-    // ここで model.detect を安全に呼ぶ（modelは非null保証）
-    detections = await model.detect(offscreen);
-  }catch(e){
-    logOnce('detect-error', 'detect error (一度だけ表示):', e && e.message ? e.message : e);
-    // リトライしてもよいが、ここでは次フレームへ
-  }
-
-  // 閾値＆件数
+  try{ detections = await model.detect(offscreen); }catch(e){ logOnce('detect-error','detect error:', e && e.message ? e.message : e); }
   detections = detections.filter(p=>p && p.score>=0.6).sort((a,b)=>b.score-a.score).slice(0, parseInt(maxItems.value,10));
 
-  // 画面座標へ & ラベル日本語
   const scaleX=W/infW, scaleY=H/infH;
-  let dets = detections.map(p=>{
-    let [x,y,w,h]=p.bbox; x*=scaleX; y*=scaleY; w*=scaleX; h*=scaleY;
-    return {x,y,w,h,label: (LABEL_JA[p.class]||p.class)};
-  });
+  let dets = detections.map(p=>{ let [x,y,w,h]=p.bbox; x*=scaleX; y*=scaleY; w*=scaleX; h*=scaleY; return {x,y,w,h,label:(LABEL_JA[p.class]||p.class)}; });
 
   if(chkTactile.checked && cvReady){
-    try{ const src=cv.imread(view); const tacts=detectTactileSimple(src); src.delete(); dets=dets.concat(tacts); }
-    catch(e){ logOnce('tactile-error','tactile error:', e && e.message ? e.message : e); }
+    try{ const src=cv.imread(view); const tacts=detectTactileSimple(src); if(chkDoor.checked){ const doors=detectDoorHeuristic(src); dets=dets.concat(doors); } dets=dets.concat(tacts); src.delete(); }
+    catch(e){ logOnce('cv-error','opencv error:', e && e.message ? e.message : e); }
+  }else if(chkDoor.checked && cvReady){
+    try{ const src=cv.imread(view); const doors=detectDoorHeuristic(src); dets=dets.concat(doors); src.delete(); }
+    catch(e){ logOnce('door-error','door error:', e && e.message ? e.message : e); }
   }
 
   const stable = stabilize(dets);
@@ -185,7 +234,10 @@ async function runLoop(){
   // 描画 & 読み上げ
   ctx.lineWidth=4; ctx.font = `${Math.max(16, Math.floor(W*0.032))}px system-ui`;
   stable.forEach(d=>{
-    ctx.strokeStyle = (d.label==='点字ブロック') ? '#ffa726' : 'rgba(0,255,0,.9)';
+    let color = 'rgba(0,255,0,.9)';
+    if(d.label==='点字ブロック') color = '#ffa726';
+    if(d.label.startsWith('ドア')) color = '#00bcd4';
+    ctx.strokeStyle = color;
     ctx.fillStyle='rgba(0,0,0,.55)';
     ctx.strokeRect(d.x,d.y,d.w,d.h);
     const angle = bearingLabel(d.x+d.w/2,d.y+d.h/2,W,H);
@@ -193,10 +245,26 @@ async function runLoop(){
     const text = `${angle} ほうこう  ${d.label}  ${dist.toFixed(1)}m`;
     const tw = ctx.measureText(text).width + 10;
     ctx.fillRect(d.x, Math.max(0,d.y-24), tw, 24);
-    ctx.fillStyle = (d.label==='点字ブロック') ? '#ffd27f' : '#9cff9c';
+    ctx.fillStyle = (d.label==='点字ブロック') ? '#ffd27f' : (d.label.startsWith('ドア') ? '#b2ebf2' : '#9cff9c');
     ctx.fillText(text, d.x+5, d.y-6);
     speakThrottled(`${angle} ほうこう ${d.label} ${dist.toFixed(1)}メートル`, d.label);
   });
+
+  // 5m安全アナウンス：中央±30°内に5m未満の安定物体が無い状態が続いたら
+  const centerSafe = (()=>{
+    for(const d of stable){
+      const deg = centerAngleDeg(d.x+d.w/2, d.y+d.h/2, W, H);
+      const offCenter = Math.min(Math.abs(deg-0), 360-Math.abs(deg-0)); // 0度が12時
+      const dist = estDistanceMeters(d.w,d.h,W,H);
+      if(offCenter <= 30 && dist < 5) return false;
+    }
+    return true;
+  })();
+  clearFrames = centerSafe ? Math.min(clearFrames+1, 999) : 0;
+  if(clearFrames >= 6){ // 約数フレーム連続で安全
+    speakThrottled('しんこうほうこう 5メートル あんぜんです', 'clear_path');
+    clearFrames = 0; // 一度喋ったらリセット
+  }
 
   const fps = (1000/(performance.now()-t0)).toFixed(1);
   badge.textContent = `FPS:${fps}  安定:${stable.length}`;
@@ -208,21 +276,18 @@ async function runLoop(){
 (async function bootstrap(){
   try{
     badge.textContent='カメラ起動中…（許可してください）'; await initCamera();
-    badge.textContent='モデル読込中…'; 
-    // 明示的に軽量バックボーンを指定（安定性＆速度）
-    model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    badge.textContent='モデル読込中…'; model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
     badge.textContent='OpenCV初期化中…'; await cvReadyPromise;
-    allReady = true;
-    btn.disabled = false; btn.classList.add('ready');
-    badge.textContent='準備完了：開始で実行（点字は必要時のみON）';
-    log('準備完了。Startボタンが緑なら安全に開始できます。');
+    allReady = true; btn.disabled=false; btn.classList.add('ready');
+    badge.textContent='準備完了：開始で実行（点字/ドアはチェックでON）';
+    log('準備完了。ドア検出はヒューリスティックの試験実装です。');
   }catch(e){
     log('初期化エラー:', e); badge.textContent='エラー：上のログを確認';
   }
 })();
 
 btn.onclick = ()=>{
-  if(!allReady){ logOnce('not-ready','まだ準備中です。ボタンが緑になるまでお待ちください。'); return; }
+  if(!allReady){ logOnce('not-ready','準備中。ボタンが緑になるまで待機してください。'); return; }
   if(!running){ running=true; btn.textContent='停止'; btn.classList.add('stop'); requestAnimationFrame(runLoop); }
   else{ running=false; btn.textContent='開始'; btn.classList.remove('stop'); }
 };
