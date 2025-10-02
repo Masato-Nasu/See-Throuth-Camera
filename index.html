@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-<title>視覚ガイド（階段検出＋汎用ガード）</title>
+<title>視覚ガイド（階段/点字/信号/ガード 改良版）</title>
 <style>
-  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui, -apple-system, Segoe UI, Roboto, 'Hiragino Kaku Gothic ProN', Meiryo, sans-serif}
+  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,'Hiragino Kaku Gothic ProN',Meiryo,sans-serif}
   #root{position:fixed;inset:0}
   video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   #hud{position:fixed;left:0;right:0;bottom:0;background:#0b0b0cdd;backdrop-filter:blur(2px);padding:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -13,7 +13,7 @@
   button{padding:8px 12px;border:0;border-radius:10px;background:#555;color:#fff;opacity:.6}
   button.ready{background:#2e7d32;opacity:1}
   button.stop{background:#c62828}
-  #debug{position:fixed;left:8px;top:8px;right:8px;max-height:42vh;overflow:auto;background:#0008;border:1px solid #3a3; padding:6px;border-radius:8px;font:12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre-wrap}
+  #debug{position:fixed;left:8px;top:8px;right:8px;max-height:42vh;overflow:auto;background:#0008;border:1px solid #3a3; padding:6px;border-radius:8px;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap}
   .badge{display:inline-block;padding:2px 6px;border-radius:6px;background:#111;border:1px solid #444;margin-right:6px}
   .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:90px;background:#e53935;color:#fff;padding:8px 12px;border-radius:10px;font-weight:700;display:none}
   .toast.show{display:block}
@@ -30,9 +30,10 @@
 
 <div id="hud">
   <button id="btn" disabled>開始</button>
-  <label><input type="checkbox" id="chkTactile"> 点字</label>
+  <label><input type="checkbox" id="chkTactile" checked> 点字</label>
   <label><input type="checkbox" id="chkGuard" checked> 汎用ガード</label>
   <label><input type="checkbox" id="chkStair" checked> 階段検出</label>
+  <label><input type="checkbox" id="chkPole" checked> ポール検出</label>
   <label>最大件数 <input type="range" id="maxItems" min="1" max="8" value="4"></label>
   <span class="badge" id="badge">準備中…</span>
 </div>
@@ -42,8 +43,8 @@
 <script src="https://docs.opencv.org/4.x/opencv.js" async></script>
 <script>
 const logEl = document.getElementById('debug');
-function logOnce(key, ...args){ if(!logOnce._set) logOnce._set=new Set(); if(logOnce._set.has(key)) return; logOnce._set.add(key); const t=new Date().toLocaleTimeString(); logEl.textContent += `[${t}] ` + args.join(' ') + '\\n'; logEl.scrollTop = logEl.scrollHeight; }
-function log(...args){ const t=new Date().toLocaleTimeString(); logEl.textContent += `[${t}] ` + args.join(' ') + '\\n'; logEl.scrollTop = logEl.scrollHeight; }
+function logOnce(key, ...args){ if(!logOnce._set) logOnce._set=new Set(); if(logOnce._set.has(key)) return; logOnce._set.add(key); const t=new Date().toLocaleTimeString(); logEl.textContent += `[${t}] ` + args.join(' ') + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+function log(...args){ const t=new Date().toLocaleTimeString(); logEl.textContent += `[${t}] ` + args.join(' ') + '\n'; logEl.scrollTop = logEl.scrollHeight; }
 const toast = document.getElementById('toast');
 function showToast(msg){ toast.textContent=msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'), 1500); }
 
@@ -52,6 +53,7 @@ const btn = document.getElementById('btn');
 const chkTactile = document.getElementById('chkTactile');
 const chkGuard = document.getElementById('chkGuard');
 const chkStair = document.getElementById('chkStair');
+const chkPole  = document.getElementById('chkPole');
 const maxItems = document.getElementById('maxItems');
 
 const video = document.getElementById('video');
@@ -78,15 +80,18 @@ const cvReadyPromise = new Promise(res=>{
 });
 
 async function initCamera(){
-  const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment', width:{ideal:1280}, height:{ideal:720} }, audio:false });
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video:{ facingMode:'environment', width:{ideal:1280}, height:{ideal:720} },
+    audio:false
+  });
   video.srcObject = stream; await video.play(); resize(); log('Camera initialized', video.videoWidth+'x'+video.videoHeight);
 }
 function resize(){ view.width = video.videoWidth || view.clientWidth; view.height = video.videoHeight || view.clientHeight; }
 window.addEventListener('resize', resize);
 
-// ===== TTS（クールダウン） =====
-const READ_OVERRIDES = new Map([['方向','ほうこう'],['信号','しんごう'],['横断歩道','おうだんほどう'],['進行方向','しんこうほうこう'],['階段','かいだん']]);
-const cooldownMs = 3000; let lastSpeakAt = {};
+// ===== TTS（クールダウン強化） =====
+const READ_OVERRIDES = new Map([['方向','ほうこう'],['信号','しんごう'],['横断歩道','おうだんほどう'],['進行方向','しんこうほうこう'],['階段','かいだん'],['点字','てんじ']]);
+const cooldownMs = 2500; let lastSpeakAt = {};
 function normalizeReading(s){ for(const [k,v] of READ_OVERRIDES) s=s.replaceAll(k,v); return s; }
 function speakThrottled(text, key){
   const now=Date.now();
@@ -102,73 +107,100 @@ function centerAngleDeg(cx, cy, W, H){ const dx=cx-W/2, dy=H/2-cy; let deg=(Math
 function estDistanceMeters(w,h,W,H){ const areaRatio=(w*h)/(W*H); return Math.min(10, Math.max(0.3, 0.6/Math.sqrt(Math.max(areaRatio,1e-6)))); }
 const LABEL_JA = {'person':'人','bicycle':'自転車','car':'車','bus':'バス','motorcycle':'バイク','truck':'トラック','laptop':'ノートパソコン','mouse':'マウス','backpack':'リュックサック','traffic light':'信号機'};
 
-// ===== 点字ブロック（軽量） =====
+// ===== 点字ブロック（改良HSV） =====
 function detectTactileSimple(srcRGBA){
   if(!cvReady) return [];
-  let gray=new cv.Mat(); cv.cvtColor(srcRGBA,gray,cv.COLOR_RGBA2GRAY); let mean=cv.mean(gray)[0]; gray.delete(); if(mean<40) return [];
   let rgb=new cv.Mat(); cv.cvtColor(srcRGBA,rgb,cv.COLOR_RGBA2RGB);
   let hsv=new cv.Mat(); cv.cvtColor(rgb,hsv,cv.COLOR_RGB2HSV); rgb.delete();
-  let lo=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[18,140,120,0]); let hi=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[36,255,255,255]);
+  // 照明差に強めの広域イエロー
+  let lo=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[15,100,90,0]);
+  let hi=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[40,255,255,255]);
   let mask=new cv.Mat(); cv.inRange(hsv,lo,hi,mask); lo.delete(); hi.delete(); hsv.delete();
-  const h=mask.rows,w=mask.cols; const floorH=Math.floor(h*0.4);
+
+  // 地面寄り（下 55%）を優先
+  const h=mask.rows,w=mask.cols; const floorH=Math.floor(h*0.55);
   let roiMask=new cv.Mat.zeros(h,w,cv.CV_8UC1); roiMask.roi(new cv.Rect(0,h-floorH,w,floorH)).setTo(new cv.Scalar(255));
   cv.bitwise_and(mask,roiMask,mask); roiMask.delete();
+
+  // ノイズ抑制
   let k=cv.Mat.ones(5,5,cv.CV_8U); cv.morphologyEx(mask,mask,cv.MORPH_OPEN,k); cv.morphologyEx(mask,mask,cv.MORPH_CLOSE,k); k.delete();
-  let contours=new cv.MatVector(), hier=new cv.Mat(); cv.findContours(mask,contours,hier,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE); mask.delete(); hier.delete();
-  let out=[]; for(let i=0;i<contours.size();i++){ let r=cv.boundingRect(contours.get(i)); const ar=(r.width*r.height)/(w*h); const aspect=r.width>r.height?r.width/(r.height+1e-6):r.height/(r.width+1e-6); if(ar>0.002 && ar<0.2 && aspect>1.2 && aspect<6.0){ out.push({x:r.x,y:r.y,w:r.width,h:r.height,label:'点字ブロック'}); } } contours.delete(); return out;
+
+  let contours=new cv.MatVector(), hier=new cv.Mat(); cv.findContours(mask,contours,hier,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+  mask.delete(); hier.delete();
+
+  let out=[]; 
+  for(let i=0;i<contours.size();i++){
+    let r=cv.boundingRect(contours.get(i));
+    const ar=(r.width*r.height)/(w*h);
+    const aspect = r.width/(r.height+1e-6);
+    // 帯状の塊のみ
+    if(ar>0.002 && ar<0.20 && aspect>1.2 && aspect<8.0){
+      out.push({x:r.x,y:r.y,w:r.width,h:r.height,label:'点字ブロック', prio:2});
+    }
+  }
+  contours.delete();
+  return out;
 }
 
-// ===== 階段検出（下半分：水平エッジが多数・等間隔に並ぶ） =====
+// ===== 階段検出（厳格化：下部限定＋横長＋縞数） =====
 function detectStairs(srcRGBA){
   if(!cvReady) return null;
   const W=srcRGBA.cols, H=srcRGBA.rows;
-  const y0 = Math.floor(H*0.45), hh = Math.floor(H*0.55); // 下半分主体
-  let roi = srcRGBA.roi(new cv.Rect(0, y0, W, Math.max(1, hh)));
+  const y0 = Math.floor(H*0.60), hh = Math.max(24, Math.floor(H*0.40)); // 下 40% を解析
+  let roi = srcRGBA.roi(new cv.Rect(0, y0, W, hh));
   let g = new cv.Mat(); cv.cvtColor(roi, g, cv.COLOR_RGBA2GRAY);
   cv.equalizeHist(g,g);
   cv.GaussianBlur(g,g,new cv.Size(3,3),0);
   let edges = new cv.Mat(); cv.Canny(g, edges, 60, 120);
 
-  // 水平ライン抽出
-  let lines = new cv.Mat();
-  cv.HoughLines(edges, lines, 1, Math.PI/180, 90);
-  let angles = [];
-  for(let i=0;i<lines.rows;i++){
-    let theta = lines.data32F[i*2+1];
-    // theta≈0 or pi（水平）を採用
-    if(Math.min(Math.abs(theta), Math.abs(Math.PI-theta)) < (12*Math.PI/180)){
-      angles.push(theta);
+  // y方向投影ヒストグラムで縞数を数える
+  let hist = new Array(roi.rows).fill(0);
+  for(let y=0;y<roi.rows;y++){
+    for(let x=0;x<roi.cols;x++){
+      if(edges.ucharPtr(y,x)[0]>0) hist[y]++;
     }
+  }
+  // 局所ピーク
+  let peaks = 0; const th = Math.max(25, 0.12*W);
+  for(let y=2;y<hist.length-2;y++){
+    if(hist[y]>hist[y-1] && hist[y]>hist[y-2] && hist[y]>hist[y+1] && hist[y]>hist[y+2] && hist[y]> th){ peaks++; }
   }
 
   let result = null;
-  if(angles.length >= 6){ // 水平ラインが多い
-    // 等間隔性をスコア化（累積投票を簡易に）
-    // プロジェクション：y方向にエッジピクセル数を集計
-    let hist = new Array(roi.rows).fill(0);
-    for(let y=0;y<roi.rows;y++){
-      for(let x=0;x<roi.cols;x++){
-        if(edges.ucharPtr(y,x)[0]>0) hist[y]++;
-      }
-    }
-    // 局所ピーク数
-    let peaks = 0;
-    for(let y=2;y<hist.length-2;y++){
-      if(hist[y]>hist[y-1] && hist[y]>hist[y-2] && hist[y]>hist[y+1] && hist[y]>hist[y+2] && hist[y]> (0.15*W)){
-        peaks++;
-      }
-    }
-    if(peaks>=5){
-      // 階段らしい → 全体矩形を返す
-      result = {x:0, y:y0, w:W, h:hh, label:'階段'};
-    }
+  if(peaks>=6){
+    // 横長条件
+    result = {x:Math.floor(W*0.05), y:y0, w:Math.floor(W*0.90), h:hh, label:'階段', prio:1};
   }
 
-  g.delete(); edges.delete(); lines.delete(); roi.delete();
+  g.delete(); edges.delete(); roi.delete();
   return result;
 }
 
-// ===== 汎用衝突ガード =====
+// ===== ポール簡易検出（縦長細幅） =====
+function detectPoles(srcRGBA){
+  if(!cvReady) return [];
+  const W=srcRGBA.cols, H=srcRGBA.rows;
+  let gray=new cv.Mat(); cv.cvtColor(srcRGBA,gray,cv.COLOR_RGBA2GRAY);
+  let blur=new cv.Mat(); cv.GaussianBlur(gray, blur, new cv.Size(5,5), 0);
+  let edges=new cv.Mat(); cv.Canny(blur, edges, 70, 140);
+  let contours=new cv.MatVector(), hier=new cv.Mat(); cv.findContours(edges,contours,hier,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+  gray.delete(); blur.delete(); edges.delete(); hier.delete();
+
+  let out=[];
+  for(let i=0;i<contours.size();i++){
+    const r=cv.boundingRect(contours.get(i));
+    const area=(r.width*r.height)/(W*H);
+    const aspect = r.height/(r.width+1e-6);
+    const bottom = r.y + r.height;
+    if(area>0.0005 && area<0.03 && aspect>3.0 && r.width < W*0.12 && bottom>H*0.55){
+      out.push({x:r.x,y:r.y,w:r.width,h:r.height,label:'ポール', prio:3});
+    }
+  }
+  contours.delete();
+  return out;
+}
+
+// ===== 平面（壁/扉）検出（緩和） =====
 function detectPlanarObstacle(srcRGBA){
   if(!cvReady) return null;
   const W=srcRGBA.cols, H=srcRGBA.rows;
@@ -180,14 +212,15 @@ function detectPlanarObstacle(srcRGBA){
   cv.meanStdDev(blur, mean, stddev);
   const sigma = stddev.data64F[0];
   gray.delete(); mean.delete(); stddev.delete();
-  // 低エッジ＆低分散で大きい面
-  if(edgeRatio < 0.035 && sigma < 20){
-    const cx = Math.floor(W*0.2), cy = Math.floor(H*0.2);
-    const cw = Math.floor(W*0.6), ch = Math.floor(H*0.6);
+
+  // 緩和：模様付きの壁も拾う
+  if(edgeRatio < 0.06 && sigma < 40){
+    const cx = Math.floor(W*0.15), cy = Math.floor(H*0.15);
+    const cw = Math.floor(W*0.70), ch = Math.floor(H*0.70);
     const roi = blur.roi(new cv.Rect(cx, cy, cw, ch));
     let m2=new cv.Mat(), s2=new cv.Mat(); cv.meanStdDev(roi, m2, s2);
     const sigma2 = s2.data64F[0]; m2.delete(); s2.delete(); roi.delete(); blur.delete(); edges.delete();
-    if(sigma2 < 18) return {x:cx, y:cy, w:cw, h:ch, label:'正面の平面（壁/扉）'};
+    if(sigma2 < 35) return {x:cx, y:cy, w:cw, h:ch, label:'正面の平面（壁/扉）', prio:0};
   }
   blur.delete(); edges.delete();
   return null;
@@ -198,7 +231,7 @@ function nearFieldGuard(stable, W, H){
     const bottom = d.y + d.h;
     const wide = d.w / W;
     const dist = estDistanceMeters(d.w, d.h, W, H);
-    if(bottom > H*0.85 || (wide>0.55 && bottom>H*0.75) || dist < 1.0){
+    if(bottom > H*0.87 || (wide>0.55 && bottom>H*0.75) || dist < 1.0){
       return {hit:true, box:d, message:'すぐ前に障害物、注意'};
     }
   }
@@ -228,9 +261,46 @@ let trackBuf = [];
 function iou(a,b){ const x1=Math.max(a.x,b.x), y1=Math.max(a.y,b.y); const x2=Math.min(a.x+a.w,b.x+b.w), y2=Math.min(a.y+a.h,b.y+b.h); const inter=Math.max(0,x2-x1)*Math.max(0,y2-y1); const u=a.w*a.h + b.w*b.h - inter; return u>0? inter/u : 0; }
 function stabilize(dets){
   const now=performance.now();
-  dets.forEach(d=>{ let m=trackBuf.find(t=>t.label===d.label && iou(t,d)>0.5); if(m){ m.x=d.x; m.y=d.y; m.w=d.w; m.h=d.h; m.count=Math.min(m.count+1,5); m.ts=now; } else { trackBuf.push({...d,count:1,ts:now}); } });
+  dets.forEach(d=>{ let m=trackBuf.find(t=>t.label===d.label && iou(t,d)>0.5); if(m){ m.x=d.x; m.y=d.y; m.w=d.w; m.h=d.h; m.count=Math.min(m.count+1,5); m.ts=now; m.prio=d.prio??m.prio; } else { trackBuf.push({...d,count:1,ts:now}); } });
   trackBuf = trackBuf.filter(t=> now - t.ts < 900);
-  return trackBuf.filter(t=> t.count>=3);
+  // 優先度（低数ほど重要）で整列
+  return trackBuf.filter(t=> t.count>=3).sort((a,b)=>(a.prio??5)-(b.prio??5));
+}
+
+// ===== 信号機 色判定 =====
+function classifyTrafficLightColor(srcRGBA, box){
+  // box は view 座標。ROI から HSV 色票を数える
+  const x = Math.max(0, Math.floor(box.x)), y = Math.max(0, Math.floor(box.y));
+  const w = Math.max(2, Math.floor(box.w)), h = Math.max(2, Math.floor(box.h));
+  const W=srcRGBA.cols, H=srcRGBA.rows;
+  const rect = new cv.Rect(Math.max(0, Math.min(x,W-2)), Math.max(0, Math.min(y,H-2)),
+                           Math.max(2, Math.min(w, W-x)), Math.max(2, Math.min(h, H-y)));
+  let roi = srcRGBA.roi(rect);
+  let rgb=new cv.Mat(); cv.cvtColor(roi,rgb,cv.COLOR_RGBA2RGB);
+  let hsv=new cv.Mat(); cv.cvtColor(rgb,hsv,cv.COLOR_RGB2HSV); rgb.delete();
+
+  const mk = (a,b)=>{ let lo=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),a); let hi=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),b); let m=new cv.Mat(); cv.inRange(hsv,lo,hi,m); lo.delete(); hi.delete(); return m; };
+
+  // 赤は 2レンジ（0付近と180付近）
+  let red1 = mk([0,120,120,0], [10,255,255,255]);
+  let red2 = mk([170,120,120,0], [180,255,255,255]);
+  let red = new cv.Mat(); cv.add(red1, red2, red); red1.delete(); red2.delete();
+
+  // 日本の青は緑〜青寄り（“青信号”）
+  let green = mk([40,120,100,0], [90,255,255,255]);   // 緑
+  let blue  = mk([90,120,100,0], [130,255,255,255]);  // 青
+  let yellow= mk([15,120,120,0], [35,255,255,255]);   // 黄
+
+  const cnt = m => cv.countNonZero(m);
+  const sr = cnt(red), sg = cnt(green), sb = cnt(blue), sy = cnt(yellow);
+  red.delete(); green.delete(); blue.delete(); yellow.delete(); hsv.delete(); roi.delete();
+
+  const maxv = Math.max(sr, sg, sb, sy);
+  if(maxv < 50) return null; // 面積閾値
+  if(maxv === sr) return '赤';
+  if(maxv === sy) return '黄';
+  if(maxv === sg || maxv === sb) return '青';
+  return null;
 }
 
 // ===== メインループ =====
@@ -249,7 +319,8 @@ async function runLoop(){
     requestAnimationFrame(runLoop); return;
   }
 
-  const infW=320, infH=Math.max(1, Math.floor(H*(320/Math.max(1,W))));
+  // 軽量推論
+  const infW=256, infH=Math.max(1, Math.floor(H*(256/Math.max(1,W))));
   offscreen.width=infW; offscreen.height=infH;
   ofx.drawImage(video,0,0,infW,infH);
 
@@ -259,20 +330,52 @@ async function runLoop(){
   detections = detections.filter(p=>p && p.score>=0.6).sort((a,b)=>b.score-a.score).slice(0, parseInt(maxItems.value,10));
 
   const scaleX=W/infW, scaleY=H/infH;
-  let dets = detections.map(p=>{ let [x,y,w,h]=p.bbox; x*=scaleX; y*=scaleY; w*=scaleX; h*=scaleY; return {x,y,w,h,label:(LABEL_JA[p.class]||p.class)}; });
+  let dets = detections.map(p=>{ let [x,y,w,h]=p.bbox; x*=scaleX; y*=scaleY; w*=scaleX; h*=scaleY; return {x,y,w,h,label:(LABEL_JA[p.class]||p.class), prio:4, rawClass:p.class}; });
 
+  // === 点字ブロック ===
   if(chkTactile.checked && cvReady){
     try{ const src=cv.imread(view); const tacts=detectTactileSimple(src); dets=dets.concat(tacts); src.delete(); }
-    catch(e){ logOnce('cv-error','opencv error:', e && e.message ? e.message : e); }
+    catch(e){ logOnce('cv-error-tact','opencv tactile error:', e && e.message ? e.message : e); }
   }
 
-  // === 階段検出 ===
-  let stairBox = null;
+  // === 階段 ===
   if(chkStair.checked && cvReady){
     try{ const src=cv.imread(view); const r=detectStairs(src); src.delete(); if(r) dets.push(r); }catch(e){}
   }
 
-  const stable = stabilize(dets);
+  // === ポール ===
+  if(chkPole.checked && cvReady){
+    try{ const src=cv.imread(view); const poles=detectPoles(src); dets=dets.concat(poles); src.delete(); }catch(e){}
+  }
+
+  // === 信号色判定（traffic light → HSV分類＋読み上げ） ===
+  if(cvReady){
+    try{
+      const src=cv.imread(view);
+      for(const d of dets){
+        if(d.rawClass==='traffic light' || d.label==='信号機'){
+          const col = classifyTrafficLightColor(src, d);
+          if(col){
+            d.label = `信号機（${col}）`;
+            d.prio = 1; // 高優先
+            speakThrottled(`${col} しんごう です`, 'traffic_'+col);
+          }
+        }
+      }
+      src.delete();
+    }catch(e){}
+  }
+
+  // 安定化＆重複除去（点字を優先して階段と競合時は点字を残す）
+  // まず安定化
+  let stable = stabilize(dets);
+
+  // 競合解決：強く重なる「点字ブロック」 vs 「階段」
+  stable = stable.filter((a,i,arr)=>{
+    if(a.label!=='点字ブロック') return true;
+    const overlapIdx = arr.findIndex(b=> b.label==='階段' && iou(a,b)>0.5);
+    return overlapIdx===-1; // 階段と被ってたら階段の方を落とす
+  });
 
   // === 衝突ガード ===
   let danger = null;
@@ -283,6 +386,11 @@ async function runLoop(){
       src.delete();
       if(planar){ danger = {type:'planar', box:planar, message:'正面に壁や扉があります'}; }
     }catch(e){ /* ignore */ }
+    if(!danger){
+      // ポール近距離注意を最優先
+      const poleNear = stable.find(d=> d.label==='ポール' && estDistanceMeters(d.w,d.h,W,H) < 1.0);
+      if(poleNear){ danger = {type:'pole', box:poleNear, message:'ポール 注意'}; }
+    }
     if(!danger){
       const nf = nearFieldGuard(stable, W, H);
       if(nf.hit) danger = {type:'near', box:nf.box, message:nf.message};
@@ -296,7 +404,14 @@ async function runLoop(){
   // 描画
   ctx.lineWidth=4; ctx.font = `${Math.max(16, Math.floor(W*0.032))}px system-ui`;
   stable.forEach(d=>{
-    let color='rgba(0,255,0,.9)'; if(d.label==='点字ブロック') color='#ffa726'; if(d.label==='階段') color='#42a5f5';
+    let color='rgba(0,255,0,.9)';
+    if(d.label.startsWith('信号機（赤')) color='#ff8a80';
+    else if(d.label.startsWith('信号機（青')) color='#80d8ff';
+    else if(d.label.startsWith('信号機（黄')) color='#ffe082';
+    else if(d.label==='点字ブロック') color='#ffa726';
+    else if(d.label==='階段') color='#42a5f5';
+    else if(d.label==='ポール') color='#f06292';
+
     ctx.strokeStyle=color; ctx.fillStyle='rgba(0,0,0,.55)';
     ctx.strokeRect(d.x,d.y,d.w,d.h);
     const angle = bearingLabel(d.x+d.w/2,d.y+d.h/2,W,H);
@@ -304,8 +419,14 @@ async function runLoop(){
     const text = `${angle} ほうこう  ${d.label}  ${dist.toFixed(1)}m`;
     const tw = ctx.measureText(text).width + 10;
     ctx.fillRect(d.x, Math.max(0,d.y-24), tw, 24);
-    ctx.fillStyle = (d.label==='点字ブロック') ? '#ffd27f' : (d.label==='階段' ? '#bbdefb' : '#9cff9c');
+    ctx.fillStyle = (d.label==='点字ブロック') ? '#ffd27f'
+                   : (d.label==='階段' ? '#bbdefb'
+                   : (d.label==='ポール' ? '#f8bbd0'
+                   : (d.label.startsWith('信号機（赤') ? '#ffcdd2'
+                   : (d.label.startsWith('信号機（青') ? '#b3e5fc'
+                   : (d.label.startsWith('信号機（黄') ? '#ffecb3' : '#9cff9c')))));
     ctx.fillText(text, d.x+5, d.y-6);
+
     if(d.label==='階段'){ speakThrottled(`まえ かいだん ちゅうい`, 'stairs'); }
   });
 
@@ -345,8 +466,8 @@ async function runLoop(){
     badge.textContent='モデル読込中…'; model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
     badge.textContent='OpenCV初期化中…'; await cvReadyPromise;
     allReady = true; btn.disabled=false; btn.classList.add('ready');
-    badge.textContent='準備完了：開始で実行（点字/ガード/階段はチェックでON）';
-    log('準備完了。階段：水平エッジ多数・等間隔検出で警告します。');
+    badge.textContent='準備完了：開始で実行（点字/ガード/階段/ポールはチェックでON）';
+    log('準備完了。階段検出は下部限定＋縞数で厳格化、信号色はHSVで判定します。');
   }catch(e){
     log('初期化エラー:', e); badge.textContent='エラー：上のログを確認';
   }
