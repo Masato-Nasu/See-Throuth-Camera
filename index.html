@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-<title>視覚支援AR：黄線/横断歩道/信号/障害物ガイド</title>
-<meta name="description" content="黄色い点字ブロックをなぞるガイド、白黒の横断歩道、信号の現在色、扉・窓・ポールなど前方障害を検出して日本語で案内します。">
+<title>視覚支援AR：黄線/横断歩道/信号/扉/ポールガイド</title>
+<meta name="description" content="黄色い点字ブロックのなぞりガイド、白黒の横断歩道、信号の現在色、扉・窓・ポールなど前方障害を検出して日本語で案内します。">
+<!-- TensorFlow.js & COCO-SSD -->
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.19.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
 <style>
@@ -73,27 +74,33 @@
   // ==== Geometry / conversions
   function resize(){ const w=v.videoWidth||innerWidth; const h=v.videoHeight||innerHeight; ov.width=w; ov.height=h; }
   function angleToClock(ang){ const deg=ang*180/Math.PI; const off=Math.round(deg/30); let hour=(12+off)%12; if(hour===0) hour=12; return hour+'時方向'; }
-  const TYPICAL_H={ person:1.7, bicycle:1.05, car:1.45, bus:3.0, truck:2.5, motorcycle:1.2, dog:0.5, cat:0.26, chair:0.9, bottle:0.25, cup:0.1, laptop:0.3, 'traffic light':0.6, 'wine glass':0.18, bench:0.7 };
+  const TYPICAL_H={ person:1.7, bicycle:1.05, car:1.45, bus:3.0, truck:2.5, motorcycle:1.2, dog:0.5, cat:0.26, chair:0.9, bottle:0.25, cup:0.1, laptop:0.3, 'traffic light':0.6, bench:0.7 };
   function focalPx(w,fovDeg){ const f=fovDeg*Math.PI/180; return (0.5*w)/Math.tan(f/2); }
   function estimateDistPx(bbox, cls){ const h=bbox[3]; const H=TYPICAL_H[cls]||0.6; if(h<=1) return null; const W=(v.videoWidth||ov.width); const F=focalPx(W, parseInt(document.getElementById('fov').value,10)); return (H*F)/h; }
 
   // ==== Colors
   function hsvFromRgb(r,g,b){ r/=255; g/=255; b/=255; const M=Math.max(r,g,b), m=Math.min(r,g,b); let h=0,s=0,v=M, d=M-m; s=M===0?0:d/M; if(M!==m){ switch(M){ case r:h=(g-b)/d+(g<b?6:0);break; case g:h=(b-r)/d+2;break; case b:h=(r-g)/d+4; } h/=6; } return {h:h*360,s,v}; }
-  function rgb2lab(r,g,b){ // fast sRGB->Lab (D65)
-    r/=255; g/=255; b/=255;
-    r = r>0.04045? Math.pow((r+0.055)/1.055,2.4): r/12.92;
-    g = g>0.04045? Math.pow((g+0.055)/1.055,2.4): g/12.92;
-    b = b>0.04045? Math.pow((b+0.055)/1.055,2.4): b/12.92;
-    const x=(r*0.4124 + g*0.3576 + b*0.1805)/0.95047;
-    const y=(r*0.2126 + g*0.7152 + b*0.0722)/1.00000;
-    const z=(r*0.0193 + g*0.1192 + b*0.9505)/1.08883;
-    const f=t=> t>0.008856? Math.cbrt(t): (7.787*t)+16/116;
+  function rgb2lab(r,g,b){ r/=255; g/=255; b/=255;
+    r=r>0.04045?Math.pow((r+0.055)/1.055,2.4):r/12.92;
+    g=g>0.04045?Math.pow((g+0.055)/1.055,2.4):g/12.92;
+    b=b>0.04045?Math.pow((b+0.055)/1.055,2.4):b/12.92;
+    const x=(r*0.4124+g*0.3576+b*0.1805)/0.95047;
+    const y=(r*0.2126+g*0.7152+b*0.0722)/1.0;
+    const z=(r*0.0193+g*0.1192+b*0.9505)/1.08883;
+    const f=t=>t>0.008856?Math.cbrt(t):(7.787*t)+16/116;
     const fx=f(x), fy=f(y), fz=f(z);
     return {L:(116*fy)-16, a:500*(fx-fy), b:200*(fy-fz)};
   }
 
   // ==== Model & camera
-  async function loadModel(){ try{ model=await cocoSsd.load({base:'lite_mobilenet_v2'}); return true; } catch{ return false; } }
+  async function loadModelWithFallback(){
+    try{ model=await cocoSsd.load({base:'lite_mobilenet_v2'}); return true; }
+    catch(e1){
+      try{ await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://unpkg.com/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); });
+           model=await cocoSsd.load({base:'lite_mobilenet_v2'}); return true; }
+      catch(e2){ console.warn('[A11yAR] coco-ssd load failed', e1, e2); return false; }
+    }
+  }
   async function startCamera(){
     if(!window.isSecureContext && location.hostname!=='localhost' && location.hostname!=='127.0.0.1'){ toast('⚠ HTTPSが必要です'); throw new Error('Insecure'); }
     const stream=await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:false });
@@ -108,7 +115,7 @@
       bird:'鳥', cat:'猫', dog:'犬', horse:'馬', sheep:'羊', cow:'牛', elephant:'象', bear:'熊', zebra:'シマウマ', giraffe:'キリン',
       backpack:'リュック', umbrella:'傘', handbag:'ハンドバッグ', tie:'ネクタイ', suitcase:'スーツケース',
       frisbee:'フリスビー', skis:'スキー板', snowboard:'スノーボード', 'sports ball':'ボール', kite:'凧', 'baseball bat':'バット', 'baseball glove':'グローブ', skateboard:'スケートボード', surfboard:'サーフボード', 'tennis racket':'テニスラケット',
-      bottle:'ボトル', 'wine glass':'ワイングラス', cup:'カップ', fork:'フォーク', knife:'ナイフ', spoon:'スプーン', bowl:'ボウル',
+      bottle:'ボトル', 'wine glass':'ワイングラス', cup:'カップ', fork:'フォーク', knife:'ナイフ', spoon:'プーン', bowl:'ボウル',
       banana:'バナナ', apple:'りんご', sandwich:'サンドイッチ', orange:'オレンジ', broccoli:'ブロッコリー', carrot:'にんじん', 'hot dog':'ホットドッグ', pizza:'ピザ', donut:'ドーナツ', cake:'ケーキ',
       chair:'椅子', couch:'ソファ', 'potted plant':'観葉植物', bed:'ベッド', 'dining table':'ダイニングテーブル', toilet:'トイレ',
       tv:'テレビ', laptop:'ノートPC', mouse:'マウス', remote:'リモコン', keyboard:'キーボード', 'cell phone':'スマホ',
@@ -120,49 +127,37 @@
 
   // ==== Yellow tactile paving (robust)
   function detectYellowGuide(){
-    const W = ov.width, H = ov.height;
-    const pw = proc.width, ph = proc.height;
-    pctx.drawImage(v, 0, 0, pw, ph);
-    const img = pctx.getImageData(0, 0, pw, ph);
-    const d = img.data;
+    const W=ov.width, H=ov.height, pw=proc.width, ph=proc.height;
+    pctx.drawImage(v,0,0,pw,ph);
+    const img=pctx.getImageData(0,0,pw,ph); const d=img.data;
 
-    const pts = [];
-    const yStart = Math.floor(ph*0.40); // 下側優先
-    for(let y=yStart; y<ph; y++){
-      for(let x=0; x<pw; x++){
+    const pts=[];
+    const yStart=Math.floor(ph*0.40);
+    for(let y=yStart;y<ph;y++){
+      for(let x=0;x<pw;x++){
         const i=(y*pw+x)*4;
         const r=d[i], g=d[i+1], b=d[i+2];
-        const {h,s,v} = hsvFromRgb(r,g,b);
-        const lab = rgb2lab(r,g,b);
-        // 夜間照明対応：HSVかつLabのb*が高い（黄方向）
-        if((h>20 && h<70 && s>0.35 && v>0.35) || (lab.b>20 && lab.a>0)){
-          pts.push([x,y]);
-        }
+        const {h,s,v}=hsvFromRgb(r,g,b); const lab=rgb2lab(r,g,b);
+        if((h>20 && h<70 && s>0.35 && v>0.35) || (lab.b>20 && lab.a>0)) pts.push([x,y]);
       }
     }
     if(pts.length<200) return null;
 
-    // RANSAC 風に直線当てはめ（x = a*y + b）
+    // RANSAC風直線当てはめ（x = a*y + b）
     let best={a:0,b:0,count:0};
     for(let t=0;t<60;t++){
-      const p1=pts[(Math.random()*pts.length)|0];
-      const p2=pts[(Math.random()*pts.length)|0];
+      const p1=pts[(Math.random()*pts.length)|0], p2=pts[(Math.random()*pts.length)|0];
       const dy=p2[1]-p1[1]; if(Math.abs(dy)<1) continue;
       const a=(p2[0]-p1[0])/dy, b=p1[0]-a*p1[1];
-      let c=0;
-      for(let k=0;k<pts.length;k+=8){ // subsample
-        const x=a*pts[k][1]+b; if(Math.abs(x-pts[k][0])<2.5) c++;
-      }
-      if(c>best.count){ best={a,b,count:c}; }
+      let c=0; for(let k=0;k<pts.length;k+=8){ const x=a*pts[k][1]+b; if(Math.abs(x-pts[k][0])<2.5) c++; }
+      if(c>best.count) best={a,b,count:c};
     }
     if(best.count<80) return null;
 
-    // 画面へ射影
     const y1=Math.floor(H*0.55), y2=H-6;
     const sx=W/pw, sy=H/ph;
     const x1=(best.a*(y1/sy)+best.b)*sx;
     const x2=(best.a*(y2/sy)+best.b)*sx;
-
     const cx=(x1+x2)/2;
     const ang=((cx - W/2)/(W/2))*(Math.PI/2);
     return {x1,y1,x2,y2,ang};
@@ -172,9 +167,7 @@
   function detectCrosswalk(){
     const W=ov.width,H=ov.height,pw=proc.width,ph=proc.height;
     pctx.drawImage(v,0,0,pw,ph);
-    const img=pctx.getImageData(0,0,pw,ph);
-    const d=img.data;
-    // 二値化（白）＋縞スコア
+    const img=pctx.getImageData(0,0,pw,ph); const d=img.data;
     const y0=Math.floor(ph*0.55);
     let cols=new Array(pw).fill(0);
     for(let y=y0;y<ph;y++){
@@ -184,77 +177,90 @@
         if(Y>200) cols[x]++;
       }
     }
-    // 白帯が並ぶピークを探す
     let bands=0, run=0;
-    for(let x=0;x<pw;x++){
-      if(cols[x]>(ph-y0)*0.45) run++; else { if(run>3){ bands++; } run=0; }
-    }
-    if(bands>=3){ // 白帯が3本以上
-      // ROIを描画（下部）
-      const rx=W*0.05, ry=H*0.65, rw=W*0.90, rh=H*0.30;
-      return {x:rx,y:ry,w:rw,h:rh};
-    }
+    for(let x=0;x<pw;x++){ if(cols[x]>(ph-y0)*0.45) run++; else { if(run>3){ bands++; } run=0; } }
+    if(bands>=3){ return {x:W*0.05,y:H*0.65,w:W*0.90,h:H*0.30}; }
     return null;
   }
 
-  // ==== Opening (door/window-like) & Pole detection
-  function detectOpeningLike(){
-    const pw=proc.width, ph=proc.height;
+  // ==== Entrance (door) & pole detector (improved)
+  function detectEntranceAndPole(){
+    const W=ov.width, H=ov.height, pw=proc.width, ph=proc.height;
     pctx.drawImage(v,0,0,pw,ph);
-    const img=pctx.getImageData(0,0,pw,ph);
-    const d=img.data;
+    const img=pctx.getImageData(0,0,pw,ph); const d=img.data;
 
-    // 輝度
     const gray=new Uint8ClampedArray(pw*ph);
     for(let i=0,j=0;i<d.length;i+=4,j++) gray[j]=(d[i]*0.2126+d[i+1]*0.7152+d[i+2]*0.0722)|0;
 
-    // エッジ（Sobel）
-    const mag=new Uint16Array(pw*ph);
-    const kx=[-1,0,1,-2,0,2,-1,0,1], ky=[-1,-2,-1,0,0,0,1,2,1];
+    const gx=[-1,0,1,-2,0,2,-1,0,1], gy=[-1,-2,-1,0,0,0,1,2,1];
+    const ex=new Int16Array(pw*ph), mag=new Uint16Array(pw*ph);
     for(let y=1;y<ph-1;y++){
       for(let x=1;x<pw-1;x++){
-        let sx=0, sy=0, t=0;
+        let sx=0,sy=0,t=0;
         for(let yy=-1;yy<=1;yy++) for(let xx=-1;xx<=1;xx++){
           const v=gray[(y+yy)*pw+(x+xx)];
-          sx += v * kx[t]; sy += v * ky[t]; t++;
+          sx += v * gx[t]; sy += v * gy[t]; t++;
         }
-        mag[y*pw+x]=Math.min(1023,Math.abs(sx)+Math.abs(sy));
+        ex[y*pw+x]=sx; mag[y*pw+x]=Math.min(1023, Math.abs(sx)+Math.abs(sy));
       }
     }
 
-    // 前方中央で大きい長方形: 開口部
-    const y0=Math.floor(ph*0.25), y1=Math.floor(ph*0.75);
-    const x0=Math.floor(pw*0.20), x1=Math.floor(pw*0.80);
-    let best=null, score=0;
-    for(let y=y0;y<y1-40;y+=3){
-      for(let x=x0;x<x1-40;x+=3){
-        const w=48,h=64;
-        let border=0, inside=0;
-        // 枠はエッジ多・内側はエッジ少 を期待
-        for(let i=0;i<w;i+=2){ border += mag[y*pw+(x+i)]>180; border += mag[(y+h)*pw+(x+i)]>180; }
-        for(let j=0;j<h;j+=2){ border += mag[(y+j)*pw+x]>180; border += mag[(y+j)*pw+(x+w)]>180; }
-        for(let j=4;j<h-4;j+=4){ for(let i=4;i<w-4;i+=4){ inside += mag[(y+j)*pw+(x+i)]>180; } }
-        const sc = border*2 - inside; // 枠>内側
-        if(sc>score && border>80) { score=sc; best={x,y,w,h}; }
+    // 探索領域
+    const rx0=Math.floor(pw*0.22), rx1=Math.floor(pw*0.78);
+    const ry0=Math.floor(ph*0.25), ry1=Math.floor(ph*0.90);
+
+    // 扉
+    let bestDoor=null,bestScore=0;
+    for(let y=ry0;y<ry1;y+=3){
+      for(let x=rx0;x<rx1;x+=3){
+        const w=48, h=Math.floor(w*2.6);
+        if(x+w>=pw-1 || y+h>=ph-1) continue;
+        if(y+h < ph*0.55) continue; // 下半分にかかる
+        let leftE=0,rightE=0,insideE=0;
+        for(let yy=0;yy<h;yy+=2){ leftE+=Math.abs(ex[(y+yy)*pw+x]); rightE+=Math.abs(ex[(y+yy)*pw+(x+w)]); }
+        for(let yy=4;yy<h-4;yy+=4){ for(let xx=6;xx<w-6;xx+=6){ insideE += mag[(y+yy)*pw+(x+xx)]>180 ? 1:0; } }
+        const aspect=h/w; if(aspect<1.8 || aspect>3.8) continue;
+        const widthRatio=w/pw; if(widthRatio<0.10 || widthRatio>0.40) continue;
+        const score=(leftE+rightE) - insideE*6;
+        if(score>bestScore){ bestScore=score; bestDoor={x,y,w,h,score}; }
       }
     }
-    const sx=ov.width/pw, sy=ov.height/ph;
-    const opening = best? {x:best.x*sx,y:best.y*sy,w:best.w*sx,h:best.h*sy}: null;
 
-    // 細長い明るい縦棒: ポール
-    let pole=null, pscore=0;
-    for(let x=1;x<pw-2;x+=2){
-      let brightRun=0; let maxRun=0; let mx=0,my0=0,my1=0;
-      for(let y=0;y<ph;y++){
+    // ポール（細くて背が高い＋両端に縦エッジ＋内側輝度の変動少なすぎない）
+    let bestPole=null,poleScore=0;
+    for(let x=rx0;x<rx1;x+=2){
+      let run=0,maxRun=0, y0=0,y1=0;
+      for(let y=ry0;y<ry1;y++){
         const Y=gray[y*pw+x];
-        if(Y>190){ if(brightRun===0) my0=y; brightRun++; }
-        else { if(brightRun>maxRun){ maxRun=brightRun; mx=x; my1=y-1; } brightRun=0; }
+        if(Y>185){ if(run===0) y0=y; run++; }
+        else{ if(run>maxRun){ maxRun=run; y1=y-1; } run=0; }
       }
-      if(maxRun>pscore && maxRun>Math.floor(ph*0.35)){ pscore=maxRun; pole={x:mx,y:my0,h:maxRun}; }
+      const h=maxRun; if(h<ph*0.45) continue;
+      const w=4; if(x+w>=pw) continue;
+      let edgeL=0,edgeR=0,varInside=0,cnt=0;
+      for(let y=y0;y<y1;y+=2){
+        edgeL+=Math.abs(ex[y*pw+x]); edgeR+=Math.abs(ex[y*pw+(x+w)]);
+        if(x+2<pw){ const a=gray[y*pw+(x+1)], b=gray[y*pw+(x+2)]; varInside+=Math.abs(a-b); cnt++; }
+      }
+      const widthRatio=w/pw; if(widthRatio>0.03) continue;
+      const meanVar=cnt?varInside/cnt:0; if(meanVar<1.5) continue;
+      const sc=(edgeL+edgeR)/(1+Math.abs(meanVar-6));
+      if(sc>poleScore){ poleScore=sc; bestPole={x, y:Math.max(ry0,y0), w, h, score:sc}; }
     }
-    const poleBox = pole? {x:(pole.x-2)*sx, y:pole.y*sy, w:4*sx, h:pole.h*sy}: null;
 
-    return {opening, pole:poleBox};
+    // 扉近傍の縦線はポール扱いを抑制
+    if(bestDoor && bestPole){
+      const cx=bestPole.x+bestPole.w/2;
+      const inDoorX=(cx>bestDoor.x-6 && cx<bestDoor.x+bestDoor.w+6);
+      const overlapY=!(bestPole.y+bestPole.h<bestDoor.y || bestPole.y>bestDoor.y+bestDoor.h);
+      if(inDoorX && overlapY){ bestPole=null; }
+    }
+
+    // スケール
+    const sx=W/pw, sy=H/ph;
+    const doorBox=bestDoor?{x:bestDoor.x*sx,y:bestDoor.y*sy,w:bestDoor.w*sx,h:bestDoor.h*sy}:null;
+    const poleBox=bestPole?{x:bestPole.x*sx,y:bestPole.y*sy,w:bestPole.w*sx,h:bestPole.h*sy}:null;
+    return {door:doorBox, pole:poleBox};
   }
 
   function redGreenYellow(imgData){
@@ -262,9 +268,7 @@
     for(let i=0;i<d.length;i+=4){
       const h=hsvFromRgb(d[i],d[i+1],d[i+2]);
       if(h.v<0.25||h.s<0.35) continue;
-      if(h.h<25||h.h>335) rc++;
-      else if(h.h>75&&h.h<170) gc++;
-      else if(h.h>=25&&h.h<=75) yc++;
+      if(h.h<25||h.h>335) rc++; else if(h.h>75&&h.h<170) gc++; else if(h.h>=25&&h.h<=75) yc++;
     }
     const total=rc+gc+yc; if(total<60) return null;
     if(rc>gc && rc>yc) return 'red';
@@ -332,7 +336,6 @@
       let ly = (y>=32)? y-4 : y+h+padH+4; if(ly+(-padH) < 0) ly = y+h+padH+4;
 
       let stroke='rgba(57,255,20,.95)';
-      // 危険物は赤寄り
       const isObstacle = ['person','car','bicycle','bus','motorcycle','truck','bench','chair','potted plant','stop sign','traffic light'].includes(p.class);
       if(isObstacle) stroke='rgba(255,59,59,.9)';
 
@@ -373,18 +376,19 @@
       }
     });
 
-    // 4) 自前：開口部/ポール
-    const {opening, pole} = detectOpeningLike();
-    if(opening){
-      ctx.strokeStyle='rgba(255,200,0,.95)'; ctx.lineWidth=3; ctx.strokeRect(opening.x,opening.y,opening.w,opening.h);
-      const centerX=opening.x+opening.w/2, centerY=opening.y+opening.h/2;
-      const ang=((centerX - ov.width/2)/(ov.width/2))*(Math.PI/2);
-      sayThrottle('opening', `${angleToClock(ang)}、出入口らしき開口。`, 2500);
+    // 4) 自前：玄関扉 / ポール
+    const {door, pole} = detectEntranceAndPole();
+    if(door){
+      ctx.strokeStyle='rgba(255,200,0,.95)'; ctx.lineWidth=3;
+      ctx.strokeRect(door.x, door.y, door.w, door.h);
+      const ang=((door.x+door.w/2 - ov.width/2)/(ov.width/2))*(Math.PI/2);
+      sayThrottle('door', `${angleToClock(ang)}、扉。`, 2200);
     }
     if(pole){
-      ctx.strokeStyle='rgba(255,140,0,.95)'; ctx.lineWidth=3; ctx.strokeRect(pole.x,pole.y,pole.w,pole.h);
+      ctx.strokeStyle='rgba(255,140,0,.95)'; ctx.lineWidth=3;
+      ctx.strokeRect(pole.x, pole.y, pole.w, pole.h);
       const ang=((pole.x+pole.w/2 - ov.width/2)/(ov.width/2))*(Math.PI/2);
-      sayThrottle('pole', `${angleToClock(ang)}、ポール。注意。`, 2200);
+      sayThrottle('pole', `${angleToClock(ang)}、ポール。注意。`, 2500);
     }
   }
 
@@ -395,8 +399,9 @@
   }
 
   // FOV（距離補正のみ）
-  document.getElementById('fov').addEventListener('input',()=>{
-    toast('FOV '+fov.value+'°'); sayThrottle('fov_notice','距離補正を更新しました。',1200);
+  const fovEl=document.getElementById('fov');
+  fovEl.addEventListener('input',()=>{
+    toast('FOV '+fovEl.value+'°'); sayThrottle('fov_notice','距離補正を更新しました。',1200);
     if(model) { model.detect(v).then(drawDetections).catch(()=>{}); }
   });
 
@@ -405,7 +410,7 @@
     document.getElementById('gate').style.display='none';
     await startCamera();
     toast('📦 モデル読込中…');
-    const ok = await loadModel();
+    const ok = await loadModelWithFallback();
     if(ok){ toast('✅ 準備完了'); detLoop(); }
     else { toast('⚠ モデル読み込み不可：ネット/CDNを確認'); }
   }
