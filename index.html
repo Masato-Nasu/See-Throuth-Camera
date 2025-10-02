@@ -2,21 +2,22 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-<title>視覚支援AR：黄ブロック/横断歩道/信号/扉/ポール</title>
-<meta name="description" content="黄色い点字ブロックのなぞりガイド、白黒の横断歩道、信号の現在色、扉・窓・ポールなど前方障害を検出し、ひらがなで読み上げます。">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum=1, user-scalable=no" />
+<title>視覚支援AR：黄ブロック/横断歩道/信号/扉/ポール（改）</title>
+<meta name="description" content="黄色い点字ブロックのなぞりガイド、横断歩道、信号の現在色、扉・ポールなど前方障害を検出し、ひらがなで読み上げます。">
+<link rel="icon" href="data:," />
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.19.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
 <style>
-  :root{ --green:#39ff14; --text:#e8ffe8; --warn:#ff3b3b; --guide:#ffd400; }
+  :root{ --green:#39ff14; --text:#e8ffe8; --warn:#ff3b3b; --guide:#ffd400 }
   html,body{ margin:0; height:100%; background:#000; color:var(--text); font-family:ui-monospace,Menlo,Consolas,monospace; overflow:hidden }
-  #wrap{ position:fixed; inset:0; }
+  #wrap{ position:fixed; inset:0 }
   video{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover }
   canvas{ position:absolute; inset:0; pointer-events:none }
   #controls{
     position:fixed; left:0; right:0; bottom:0; display:flex; flex-wrap:wrap; gap:10px;
     padding:8px calc(10px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
-    background:rgba(0,0,0,0.15); border-top:1px solid rgba(57,255,20,.25); overflow-x:auto; -webkit-overflow-scrolling:touch; z-index:5
+    background:rgba(0,0,0,.15); border-top:1px solid rgba(57,255,20,.25); overflow-x:auto; -webkit-overflow-scrolling:touch; z-index:5
   }
   .label{ color:var(--green); font-size:12px; margin:0 4px }
   .range, select, .btn{ border:1px solid rgba(57,255,20,.45); background:rgba(0,0,0,.25); color:var(--text); border-radius:10px; padding:6px 10px; white-space:nowrap }
@@ -24,25 +25,25 @@
   #gate{ position:fixed; inset:0; display:grid; place-items:center; background:rgba(0,0,0,.9); color:var(--text); z-index:10; text-align:center; gap:14px; padding:20px }
   #toast{ position:fixed; left:50%; transform:translateX(-50%); top:10px; padding:8px 12px; border:1px solid rgba(57,255,20,.5); border-radius:10px; background:rgba(0,0,0,.55); color:var(--green); display:none; z-index:20 }
 </style>
-<link rel="icon" href="data:," />
 </head>
 <body>
   <div id="toast"></div>
   <div id="wrap">
     <video id="v" autoplay playsinline muted></video>
     <canvas id="ov"></canvas>
-    <canvas id="proc" width="224" height="126" style="display:none"></canvas>
+    <!-- 処理用ミニキャンバス（ビデオからの切り出し元） -->
+    <canvas id="proc" width="288" height="162" style="display:none"></canvas>
   </div>
   <div id="controls">
     <button class="btn" id="startBtn">▶︎ 開始</button>
-    <span class="label">FOV°</span><input class="range" id="fov" type="range" min="45" max="95" value="70" />
+    <span class="label">FOV°</span><input class="range" id="fov" type="range" min="50" max="95" value="70" />
     <span class="label">読み上げ</span>
     <select id="announceMode">
       <option value="important">重要のみ（人・車・自転車・バス）</option>
       <option value="people_vehicles">人＋乗り物</option>
       <option value="all">すべて</option>
     </select>
-    <span class="label">最大件数</span><input class="range" id="topK" type="range" min="1" max="3" value="1" />
+    <span class="label">最大件数</span><input class="range" id="topK" type="range" min="1" max="3" value="2" />
   </div>
   <div id="gate">
     <div>
@@ -55,9 +56,9 @@
 <script>
 (async()=>{
   // ===== DOM
-  const v=document.getElementById('v');
-  const ov=document.getElementById('ov'); const ctx=ov.getContext('2d');
-  const proc=document.getElementById('proc'); const pctx=proc.getContext('2d');
+  const v = document.getElementById('v');
+  const ov = document.getElementById('ov'); const ctx = ov.getContext('2d');
+  const proc = document.getElementById('proc'); const pctx = proc.getContext('2d', { willReadFrequently:true });
   const toast=(m)=>{ const t=document.getElementById('toast'); t.textContent=m; t.style.display='block'; clearTimeout(toast._t); toast._t=setTimeout(()=>t.style.display='none', 2000); };
 
   // ===== Speech（ひらがな固定）
@@ -73,7 +74,7 @@
     'stop sign':'いちじていし ひょうしき', 'parking meter':'パーキングメーター',
     bottle:'ボトル', cup:'カップ', laptop:'ノートパソコン', tv:'テレビ', 'cell phone':'スマホ'
   };
-  const toKana = (cls)=> JA_KANA[cls] || cls; // 未登録は原文のまま
+  const toKana = (cls)=> JA_KANA[cls] || cls;
 
   // ===== Camera/Model
   let model=null;
@@ -85,20 +86,57 @@
   }
   async function loadModel(){ model=await cocoSsd.load({base:'lite_mobilenet_v2'}); }
 
-  // ===== Geo/angles & distance
+  // ===== Angles & distance
   function angleToClock(ang){ const deg=ang*180/Math.PI; const off=Math.round(deg/30); let h=(12+off)%12; if(h===0) h=12; return h+'じ ほうこう'; }
-  const TYPICAL_H={ person:1.7, bicycle:1.05, car:1.45, bus:3.0, truck:2.5, motorcycle:1.2, chair:0.9, bench:0.7, 'traffic light':0.6 };
+  const TYPICAL_H={ person:1.7, bicycle:1.05, car:1.45, bus:3.0, truck:2.5, motorcycle:1.2, chair:0.9, bench:0.7, 'traffic light':0.7 };
   function focalPx(w,fovDeg){ const f=fovDeg*Math.PI/180; return (0.5*w)/Math.tan(f/2); }
-  function estimateDistPx(bbox, cls){ const h=bbox[3]; const H=TYPICAL_H[cls]||0.6; if(h<=1) return null; const W=(v.videoWidth||ov.width); const F=focalPx(W, parseInt(document.getElementById('fov').value,10)); return (H*F)/h; }
+  function estimateDistPx(bbox, cls){
+    const h=bbox[3]; const H=TYPICAL_H[cls]||0.6; if(h<=1) return null;
+    const W=(v.videoWidth||ov.width); const F=focalPx(W, parseInt(document.getElementById('fov').value,10));
+    return (H*F)/h;
+  }
 
-  // ===== Colors
+  // ===== Color helpers
   function hsv(r,g,b){ r/=255; g/=255; b/=255; const M=Math.max(r,g,b), m=Math.min(r,g,b), d=M-m; let h=0; if(d){ switch(M){case r:h=(g-b)/d+(g<b?6:0);break;case g:h=(b-r)/d+2;break;case b:h=(r-g)/d+4;break;} h*=60; } const s=M?d/M:0; return {h,s,v:M}; }
-  function rgb2lab(r,g,b){ r/=255; g/=255; b/=255; r=r>0.04045?Math.pow((r+0.055)/1.055,2.4):r/12.92; g=g>0.04045?Math.pow((g+0.055)/1.055,2.4):g/12.92; b=b>0.04045?Math.pow((b+0.055)/1.055,2.4):b/12.92; const x=(r*0.4124+g*0.3576+b*0.1805)/0.95047, y=(r*0.2126+g*0.7152+b*0.0722), z=(r*0.0193+g*0.1192+b*0.9505)/1.08883; const f=t=>t>0.008856?Math.cbrt(t):(7.787*t)+16/116; const fx=f(x), fy=f(y), fz=f(z); return {L:116*fy-16, a:500*(fx-fy), b:200*(fy-fz)}; }
-  function tlColor(img){ const d=img.data; let rc=0,gc=0,yc=0; for(let i=0;i<d.length;i+=4){ const t=hsv(d[i],d[i+1],d[i+2]); if(t.v<0.25||t.s<0.35) continue; if(t.h<25||t.h>335) rc++; else if(t.h>75&&t.h<170) gc++; else if(t.h>=25&&t.h<=75) yc++; } const s=rc+gc+yc; if(s<60) return null; if(rc>gc&&rc>yc) return 'あか'; if(gc>rc&&gc>yc) return 'あお'; return 'きいろ'; }
+  function rgb2lab(r,g,b){ r/=255; g/=255; b/=255; r=r>0.04045?Math.pow((r+0.055)/1.055,2.4):r/12.92; g=g>0.04045?Math.pow((g+0.055)/1.055,2.4):g/12.92; b=b>0.04045?Math.pow((b+0.055)/1.055,2.4):b/12.92;
+    const x=(r*0.4124+g*0.3576+b*0.1805)/0.95047, y=(r*0.2126+g*0.7152+b*0.0722), z=(r*0.0193+g*0.1192+b*0.9505)/1.08883;
+    const f=t=>t>0.008856?Math.cbrt(t):(7.787*t)+16/116; const fx=f(x), fy=f(y), fz=f(z); return {L:116*fy-16, a:500*(fx-fy), b:200*(fy-fz)}; }
 
-  // ===== Yellow tactile paving (stronger)
+  // === ビデオフレームから任意領域を切り出す（※信号色の根本修正ポイント）
+  function getVideoCrop(x,y,w,h){
+    // まず処理キャンバスへビデオ全体を縮小コピー
+    pctx.drawImage(v,0,0,proc.width,proc.height);
+    const sx = proc.width / ov.width, sy = proc.height / ov.height;
+    const ix = Math.max(0, Math.floor(x*sx)), iy = Math.max(0, Math.floor(y*sy));
+    const iw = Math.max(1, Math.floor(w*sx)), ih = Math.max(1, Math.floor(h*sy));
+    try{ return pctx.getImageData(ix,iy,iw,ih); }catch(e){ return null; }
+  }
+
+  // === 信号の色判定（青緑＝日本の“青”を広く拾う）
+  function tlColorFromCrop(img){
+    if(!img) return null;
+    const d=img.data; let rc=0,gc=0,yc=0;
+    for(let i=0;i<d.length;i+=4){
+      const H=hsv(d[i],d[i+1],d[i+2]);
+      // 暗所ノイズ除去
+      if(H.v<0.18 || H.s<0.22) continue;
+      // 赤
+      if(H.h<20 || H.h>340) rc++;
+      // 青〜緑（日本の“青”を含む: 75〜190まで拡張しシアン域も）
+      else if(H.h>=75 && H.h<=190) gc++;
+      // 黄
+      else if(H.h>=20 && H.h<75) yc++;
+    }
+    const sum=rc+gc+yc; if(sum<40) return null;
+    if(gc>rc && gc>yc) return 'あお';      // 青（青緑含む）
+    if(rc>gc && rc>yc) return 'あか';      // 赤
+    return 'きいろ';                        // 黄
+  }
+
+  // ===== 黄色い点字ブロック
   function detectYellowGuide(){
     const W=ov.width, H=ov.height, pw=proc.width, ph=proc.height;
+    // 下半分を強調して取得
     pctx.drawImage(v,0,0,pw,ph);
     const img=pctx.getImageData(0,0,pw,ph), d=img.data;
 
@@ -107,56 +145,57 @@
     for(let y=yStart;y<ph;y++){
       for(let x=0;x<pw;x++){
         const i=(y*pw+x)*4, r=d[i], g=d[i+1], b=d[i+2];
-        const h=hsv(r,g,b), lab=rgb2lab(r,g,b);
-        // 3条件のいずれかを満たす（夜間対応）
-        const condHSV = (h.h>18 && h.h<75 && h.s>0.28 && h.v>0.28);
-        const condLab = (lab.b>12 && lab.a>-5);               // 黄方向
-        const condRG  = ((r+g)/2 - b > 28) && (r>g*0.8) && (g>b*1.15);
+        const H=hsv(r,g,b), L=rgb2lab(r,g,b);
+        // 夜間/影に強い三系統しきい値（少し緩和）
+        const condHSV = (H.h>16 && H.h<75 && H.s>0.24 && H.v>0.24);
+        const condLab = (L.b>10 && L.a>-8);
+        const condRG  = (((r+g)>>1) - b > 20) && (r>g*0.75) && (g>b*1.10);
         if(condHSV || condLab || condRG) pts.push([x,y]);
       }
     }
-    if(pts.length<180) return null;
+    // 画素が少ないときはスキップ
+    if(pts.length<120) return null;
 
     // RANSAC直線（x = a*y + b）
     let best={a:0,b:0,cnt:0};
-    for(let t=0;t<80;t++){
+    for(let t=0;t<100;t++){
       const p1=pts[(Math.random()*pts.length)|0], p2=pts[(Math.random()*pts.length)|0];
       const dy=p2[1]-p1[1]; if(Math.abs(dy)<1) continue;
       const a=(p2[0]-p1[0])/dy, b=p1[0]-a*p1[1];
-      let c=0; for(let k=0;k<pts.length;k+=6){ const x=a*pts[k][1]+b; if(Math.abs(x-pts[k][0])<3) c++; }
+      let c=0; for(let k=0;k<pts.length;k+=5){ const x=a*pts[k][1]+b; if(Math.abs(x-pts[k][0])<4) c++; }
       if(c>best.cnt) best={a,b,cnt:c};
     }
-    if(best.cnt<90) return null;
+    if(best.cnt<70) return null;
 
     const sx=W/pw, sy=H/ph;
-    const y1=Math.floor(H*0.55), y2=H-6;
+    const y1=Math.floor(H*0.55), y2=H-8;
     const x1=(best.a*(y1/sy)+best.b)*sx, x2=(best.a*(y2/sy)+best.b)*sx;
     const cx=(x1+x2)/2;
     const ang=((cx - W/2)/(W/2))*(Math.PI/2);
     return {x1,y1,x2,y2,ang};
   }
 
-  // ===== Crosswalk
+  // ===== 横断歩道（ハイコントラスト縞検出・閾値微調整）
   function detectCrosswalk(){
     const W=ov.width,H=ov.height,pw=proc.width,ph=proc.height;
     pctx.drawImage(v,0,0,pw,ph);
     const img=pctx.getImageData(0,0,pw,ph), d=img.data;
     const y0=Math.floor(ph*0.55);
-    let cols=new Array(pw).fill(0);
+    const cols=new Array(pw).fill(0);
     for(let y=y0;y<ph;y++){
       for(let x=0;x<pw;x++){
         const i=(y*pw+x)*4;
         const Y=0.2126*d[i]+0.7152*d[i+1]+0.0722*d[i+2];
-        if(Y>200) cols[x]++;
+        if(Y>195) cols[x]++;
       }
     }
     let bands=0, run=0;
-    for(let x=0;x<pw;x++){ if(cols[x]>(ph-y0)*0.45) run++; else { if(run>3){ bands++; } run=0; } }
-    if(bands>=3){ return {x:W*0.05,y:H*0.65,w:W*0.90,h:H*0.30}; }
+    for(let x=0;x<pw;x++){ if(cols[x]>(ph-y0)*0.42) run++; else { if(run>3){ bands++; } run=0; } }
+    if(bands>=3){ return {x:W*0.05,y:H*0.64,w:W*0.90,h:H*0.30}; }
     return null;
   }
 
-  // ===== Door & Pole (improved)
+  // ===== ドア＆ポール（ポールを拾いやすく、ドア枠と分離）
   function detectDoorAndPole(){
     const W=ov.width,H=ov.height,pw=proc.width,ph=proc.height;
     pctx.drawImage(v,0,0,pw,ph);
@@ -164,6 +203,7 @@
     const gray=new Uint8ClampedArray(pw*ph);
     for(let i=0,j=0;i<d.length;i+=4,j++) gray[j]=(d[i]*0.2126+d[i+1]*0.7152+d[i+2]*0.0722)|0;
 
+    // Sobel X / Y & 近似勾配
     const gx=[-1,0,1,-2,0,2,-1,0,1], gy=[-1,-2,-1,0,0,0,1,2,1];
     const ex=new Int16Array(pw*ph), mag=new Uint16Array(pw*ph);
     for(let y=1;y<ph-1;y++){
@@ -177,45 +217,52 @@
       }
     }
 
-    const rx0=Math.floor(pw*0.22), rx1=Math.floor(pw*0.78);
-    const ry0=Math.floor(ph*0.25), ry1=Math.floor(ph*0.90);
+    // 探索領域（前方中心）
+    const rx0=Math.floor(pw*0.18), rx1=Math.floor(pw*0.82);
+    const ry0=Math.floor(ph*0.22), ry1=Math.floor(ph*0.92);
 
-    // door
+    // === ドア（左右フレームの強い縦エッジ＋内側エッジの少なさ）
     let bestDoor=null, scoreD=0;
     for(let y=ry0;y<ry1;y+=3){
       for(let x=rx0;x<rx1;x+=3){
-        const w=48, h=Math.floor(w*2.6);
+        const w=48, h=Math.floor(w*2.5);
         if(x+w>=pw-1 || y+h>=ph-1) continue;
-        if(y+h < ph*0.55) continue;
+        if(y+h < ph*0.50) continue; // 低めにある矩形を優先
         let eL=0,eR=0,inE=0;
         for(let yy=0;yy<h;yy+=2){ eL+=Math.abs(ex[(y+yy)*pw+x]); eR+=Math.abs(ex[(y+yy)*pw+(x+w)]); }
-        for(let yy=4;yy<h-4;yy+=4){ for(let xx=6;xx<w-6;xx+=6){ inE += mag[(y+yy)*pw+(x+xx)]>180?1:0; } }
+        for(let yy=4;yy<h-4;yy+=5){ for(let xx=6;xx<w-6;xx+=6){ inE += mag[(y+yy)*pw+(x+xx)]>190?1:0; } }
         const ar=h/w; if(ar<1.8||ar>3.8) continue;
-        const wr=w/pw; if(wr<0.10||wr>0.40) continue;
-        const sc=(eL+eR)-inE*6;
+        const wr=w/pw; if(wr<0.10||wr>0.42) continue;
+        const sc=(eL+eR)-inE*5;
         if(sc>scoreD){ scoreD=sc; bestDoor={x,y,w,h}; }
       }
     }
 
-    // pole
+    // === ポール（列方向の白系連続＋左右エッジ＋内部変動で円柱っぽさ）
     let bestPole=null, scoreP=0;
     for(let x=rx0;x<rx1;x+=2){
       let run=0,maxRun=0,y0=0,y1=0;
       for(let y=ry0;y<ry1;y++){
-        const Y=gray[y*pw+x]; if(Y>185){ if(run===0) y0=y; run++; } else { if(run>maxRun){ maxRun=run; y1=y-1; } run=0; }
+        const Y=gray[y*pw+x]; if(Y>170){ if(run===0) y0=y; run++; } else { if(run>maxRun){ maxRun=run; y1=y-1; } run=0; }
       }
-      const h=maxRun; if(h<ph*0.45) continue;
+      const h=maxRun; if(h<ph*0.38) continue; // かなり高い縦要素のみ
       const w=4; if(x+w>=pw) continue;
       let eL=0,eR=0,varIn=0,cnt=0;
       for(let y=y0;y<y1;y+=2){ eL+=Math.abs(ex[y*pw+x]); eR+=Math.abs(ex[y*pw+(x+w)]); if(x+2<pw){ varIn+=Math.abs(gray[y*pw+(x+1)]-gray[y*pw+(x+2)]); cnt++; } }
-      if(w/pw>0.03) continue; const mv=cnt?varIn/cnt:0; if(mv<1.5) continue;
-      const sc=(eL+eR)/(1+Math.abs(mv-6)); if(sc>scoreP){ scoreP=sc; bestPole={x,y:y0,w,h}; }
+      const mv=cnt?varIn/cnt:0;
+      // 幅の上限（細い柱に限定）＆内部変動のしきい値を緩め
+      if(w/pw>0.035) continue;
+      if(mv<1.0) continue;
+      const sc=(eL+eR)/(1+Math.abs(mv-5)); // だいたい5付近を好む
+      if(sc>scoreP){ scoreP=sc; bestPole={x, y:y0, w, h}; }
     }
 
+    // ドア縦枠とポールの混同を抑制
     if(bestDoor && bestPole){
-      const cx=bestPole.x+bestPole.w/2; const inside=(cx>bestDoor.x-6 && cx<bestDoor.x+bestDoor.w+6);
+      const cx=bestPole.x+bestPole.w/2;
+      const inside=(cx>bestDoor.x-6 && cx<bestDoor.x+bestDoor.w+6);
       const overlap=!(bestPole.y+bestPole.h<bestDoor.y || bestPole.y>bestDoor.y+bestDoor.h);
-      if(inside && overlap) bestPole=null; // 扉縦フレーム抑制
+      if(inside && overlap) bestPole=null;
     }
 
     const sx=ov.width/pw, sy=ov.height/ph;
@@ -225,12 +272,12 @@
     };
   }
 
-  // ===== Main loop
+  // ===== Main draw
   function draw(preds){
     ctx.clearRect(0,0,ov.width,ov.height);
 
     // 前方ROI
-    const ROI = {x: ov.width*0.33, y: ov.height*0.45, w: ov.width*0.34, h: ov.height*0.42};
+    const ROI = {x: ov.width*0.33, y: ov.height*0.44, w: ov.width*0.34, h: ov.height*0.44};
     ctx.strokeStyle='rgba(255,255,255,.18)'; ctx.lineWidth=2; ctx.strokeRect(ROI.x,ROI.y,ROI.w,ROI.h);
 
     // 黄ブロック
@@ -255,7 +302,7 @@
     const mode=document.getElementById('announceMode').value;
     const allow=(cls)=>{ if(mode==='all') return true; const pv=['person','car','bicycle','bus','motorcycle','truck']; const imp=['person','car','bicycle','bus']; return mode==='people_vehicles'? pv.includes(cls):imp.includes(cls); };
 
-    const minScore=0.55;
+    const minScore=0.52;
     const items = preds.filter(p=>p.score>=minScore).map(p=>{
       const [x,y,w,h]=p.bbox; const cx=x+w/2; const ang=((cx-Wpx/2)/(Wpx/2))*(Math.PI/2);
       const dist=estimateDistPx(p.bbox,p.class); return {...p,ang,dist};
@@ -269,14 +316,18 @@
       // 枠
       const isObs=['person','car','bicycle','bus','motorcycle','truck','bench','chair','potted plant','stop sign','traffic light'].includes(p.class);
       ctx.strokeStyle=isObs?'rgba(255,59,59,.9)':'rgba(57,255,20,.95)'; ctx.lineWidth=3; ctx.strokeRect(x,y,w,h);
-      // ラベル
+      // ラベル（日本語大きめ）
       ctx.font='600 22px ui-monospace,Menlo,Consolas,monospace';
       const tw=ctx.measureText(label).width+16; const pad=28;
       let lx=Math.min(Math.max(x,4), ov.width-tw-4); let ly=(y>=32)?y-4:y+h+pad+4; if(ly+(-pad)<0) ly=y+h+pad+4;
       ctx.fillStyle='rgba(0,0,0,.7)'; ctx.fillRect(lx,ly-pad,tw,pad); ctx.fillStyle=isObs?'#ff7d7d':'#39ff14'; ctx.fillText(label,lx+8,ly-7);
 
-      // 信号の色
-      if(p.class==='traffic light'){ try{ const crop=ctx.getImageData(x,y,w,h); const c=tlColor(crop); if(c){ say('tl', `しんごう は いま、${c}。`, 2400); } }catch(e){} }
+      // ★ 信号の色（ビデオフレームから正しく切り出し）
+      if(p.class==='traffic light'){
+        const crop=getVideoCrop(x,y,w,h);
+        const c=tlColorFromCrop(crop);
+        if(c){ say('tl', `しんごう は いま、${c}。`, 2200); }
+      }
 
       // ROI＆距離（5m）で障害として集計
       const cx=x+w/2, cy=y+h/2; const inROI = (cx>ROI.x && cx<ROI.x+ROI.w && cy>ROI.y && cy<ROI.y+ROI.h);
@@ -285,17 +336,27 @@
       // 近い順の読み上げ
       if(said<K && allow(p.class)){
         const t = `${dir}、${dt? dt.toFixed(1)+'メートル、':''}${toKana(p.class)}。`;
-        say(`obj_${p.class}_${dir}`, t, 1500); said++;
+        say(`obj_${p.class}_${dir}`, t, 1400); said++;
       }
     });
 
-    // 扉・ポール
+    // 扉・ポール（独自検出）
     const {door, pole}=detectDoorAndPole();
-    if(door){ ctx.strokeStyle='rgba(255,200,0,.95)'; ctx.lineWidth=3; ctx.strokeRect(door.x,door.y,door.w,door.h); const ang=((door.x+door.w/2-ov.width/2)/(ov.width/2))*(Math.PI/2); say('door', `${angleToClock(ang)}、とびら。`,2200); if(door.y+door.h/2>ROI.y && door.y<ROI.y+ROI.h) nearestObstacle=Math.min(nearestObstacle,2.5); }
-    if(pole){ ctx.strokeStyle='rgba(255,140,0,.95)'; ctx.lineWidth=3; ctx.strokeRect(pole.x,pole.y,pole.w,pole.h); const ang=((pole.x+pole.w/2-ov.width/2)/(ov.width/2))*(Math.PI/2); say('pole', `${angleToClock(ang)}、ポール。ちゅうい。`,2200); if(pole.y+pole.h/2>ROI.y && pole.y<ROI.y+ROI.h) nearestObstacle=Math.min(nearestObstacle,2.0); }
+    if(door){
+      ctx.strokeStyle='rgba(255,200,0,.95)'; ctx.lineWidth=3; ctx.strokeRect(door.x,door.y,door.w,door.h);
+      const ang=((door.x+door.w/2-ov.width/2)/(ov.width/2))*(Math.PI/2);
+      say('door', `${angleToClock(ang)}、とびら。`,2000);
+      if(door.y+door.h/2>ROI.y && door.y<ROI.y+ROI.h) nearestObstacle=Math.min(nearestObstacle,2.8);
+    }
+    if(pole){
+      ctx.strokeStyle='rgba(255,140,0,.95)'; ctx.lineWidth=3; ctx.strokeRect(pole.x,pole.y,pole.w,pole.h);
+      const ang=((pole.x+pole.w/2-ov.width/2)/(ov.width/2))*(Math.PI/2);
+      say('pole', `${angleToClock(ang)}、ポール。ちゅうい。`,2000);
+      if(pole.y+pole.h/2>ROI.y && pole.y<ROI.y+ROI.h) nearestObstacle=Math.min(nearestObstacle,2.2);
+    }
 
     // 5m以内に前方障害なし
-    if(nearestObstacle===Infinity){ say('clear5', 'まえ、5メートル ないに しょうがい なし。', 4000); }
+    if(nearestObstacle===Infinity){ say('clear5', 'まえ、5メートル ないに しょうがい なし。', 3800); }
   }
 
   async function loop(){
