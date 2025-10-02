@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-<title>視覚ガイド（階段/点字/信号/ガード 改良版）</title>
+<title>視覚ガイド — 音声強化・しきい値緩和版</title>
 <style>
   html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,'Hiragino Kaku Gothic ProN',Meiryo,sans-serif}
   #root{position:fixed;inset:0}
@@ -13,7 +13,7 @@
   button{padding:8px 12px;border:0;border-radius:10px;background:#555;color:#fff;opacity:.6}
   button.ready{background:#2e7d32;opacity:1}
   button.stop{background:#c62828}
-  #debug{position:fixed;left:8px;top:8px;right:8px;max-height:42vh;overflow:auto;background:#0008;border:1px solid #3a3; padding:6px;border-radius:8px;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap}
+  #debug{position:fixed;left:8px;top:8px;right:8px;max-height:42vh;overflow:auto;background:#0008;border:1px solid #3a3;padding:6px;border-radius:8px;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap}
   .badge{display:inline-block;padding:2px 6px;border-radius:6px;background:#111;border:1px solid #444;margin-right:6px}
   .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:90px;background:#e53935;color:#fff;padding:8px 12px;border-radius:10px;font-weight:700;display:none}
   .toast.show{display:block}
@@ -42,6 +42,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3"></script>
 <script src="https://docs.opencv.org/4.x/opencv.js" async></script>
 <script>
+/* ------------ 基本ユーティリティ ------------ */
 const logEl = document.getElementById('debug');
 function logOnce(key, ...args){ if(!logOnce._set) logOnce._set=new Set(); if(logOnce._set.has(key)) return; logOnce._set.add(key); const t=new Date().toLocaleTimeString(); logEl.textContent += `[${t}] ` + args.join(' ') + '\n'; logEl.scrollTop = logEl.scrollHeight; }
 function log(...args){ const t=new Date().toLocaleTimeString(); logEl.textContent += `[${t}] ` + args.join(' ') + '\n'; logEl.scrollTop = logEl.scrollHeight; }
@@ -62,7 +63,7 @@ const ctx = view.getContext('2d');
 
 let running=false, model=null, cvReady=false, allReady=false;
 
-// ===== TFJS backend =====
+/* ------------ TFJS backend ------------ */
 (async()=>{
   try{
     await tf.setBackend('webgl').catch(async ()=>{ log('webgl backend failed -> cpu'); await tf.setBackend('cpu'); });
@@ -70,7 +71,7 @@ let running=false, model=null, cvReady=false, allReady=false;
   }catch(e){ log('TFJS init error:', e); }
 })();
 
-// ===== OpenCV ready promise =====
+/* ------------ OpenCV ready ------------ */
 const cvReadyPromise = new Promise(res=>{
   if (window.cv && cv.getBuildInformation) {
     cv['onRuntimeInitialized'] = ()=>{ cvReady=true; log('OpenCV ready'); res(); };
@@ -79,6 +80,7 @@ const cvReadyPromise = new Promise(res=>{
   }
 });
 
+/* ------------ Camera ------------ */
 async function initCamera(){
   const stream = await navigator.mediaDevices.getUserMedia({
     video:{ facingMode:'environment', width:{ideal:1280}, height:{ideal:720} },
@@ -89,11 +91,11 @@ async function initCamera(){
 function resize(){ view.width = video.videoWidth || view.clientWidth; view.height = video.videoHeight || view.clientHeight; }
 window.addEventListener('resize', resize);
 
-// ===== TTS（クールダウン強化） =====
+/* ------------ TTS（個別キー＋CD） ------------ */
 const READ_OVERRIDES = new Map([['方向','ほうこう'],['信号','しんごう'],['横断歩道','おうだんほどう'],['進行方向','しんこうほうこう'],['階段','かいだん'],['点字','てんじ']]);
-const cooldownMs = 2500; let lastSpeakAt = {};
 function normalizeReading(s){ for(const [k,v] of READ_OVERRIDES) s=s.replaceAll(k,v); return s; }
-function speakThrottled(text, key){
+const lastSpeakAt = {};
+function speakThrottled(text, key, cooldownMs=2200){
   const now=Date.now();
   if (speechSynthesis.speaking) return;
   if (lastSpeakAt[key] && (now - lastSpeakAt[key] < cooldownMs)) return;
@@ -101,39 +103,37 @@ function speakThrottled(text, key){
   try{ const u=new SpeechSynthesisUtterance(normalizeReading(text)); u.lang='ja-JP'; speechSynthesis.speak(u); }catch(e){}
 }
 
-// ===== Helper =====
+/* ------------ Helper ------------ */
 function bearingLabel(cx, cy, W, H){ const dx=cx-W/2, dy=H/2-cy; let deg=(Math.atan2(dy,dx)*180/Math.PI+360)%360; const hour=Math.round(deg/30)||12; return `${hour}じ`; }
 function centerAngleDeg(cx, cy, W, H){ const dx=cx-W/2, dy=H/2-cy; let deg=(Math.atan2(dy,dx)*180/Math.PI+360)%360; return deg; }
 function estDistanceMeters(w,h,W,H){ const areaRatio=(w*h)/(W*H); return Math.min(10, Math.max(0.3, 0.6/Math.sqrt(Math.max(areaRatio,1e-6)))); }
-const LABEL_JA = {'person':'人','bicycle':'自転車','car':'車','bus':'バス','motorcycle':'バイク','truck':'トラック','laptop':'ノートパソコン','mouse':'マウス','backpack':'リュックサック','traffic light':'信号機'};
+const LABEL_JA = {'traffic light':'信号機','person':'人','bicycle':'自転車','car':'車','bus':'バス','motorcycle':'バイク','truck':'トラック'};
 
-// ===== 点字ブロック（改良HSV） =====
+/* ------------ 点字（HSV拡大） ------------ */
 function detectTactileSimple(srcRGBA){
   if(!cvReady) return [];
   let rgb=new cv.Mat(); cv.cvtColor(srcRGBA,rgb,cv.COLOR_RGBA2RGB);
   let hsv=new cv.Mat(); cv.cvtColor(rgb,hsv,cv.COLOR_RGB2HSV); rgb.delete();
-  // 照明差に強めの広域イエロー
-  let lo=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[15,100,90,0]);
-  let hi=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[40,255,255,255]);
+
+  // 広めの黄レンジ
+  let lo=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[15,90,80,0]);
+  let hi=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),[42,255,255,255]);
   let mask=new cv.Mat(); cv.inRange(hsv,lo,hi,mask); lo.delete(); hi.delete(); hsv.delete();
 
-  // 地面寄り（下 55%）を優先
   const h=mask.rows,w=mask.cols; const floorH=Math.floor(h*0.55);
   let roiMask=new cv.Mat.zeros(h,w,cv.CV_8UC1); roiMask.roi(new cv.Rect(0,h-floorH,w,floorH)).setTo(new cv.Scalar(255));
   cv.bitwise_and(mask,roiMask,mask); roiMask.delete();
 
-  // ノイズ抑制
   let k=cv.Mat.ones(5,5,cv.CV_8U); cv.morphologyEx(mask,mask,cv.MORPH_OPEN,k); cv.morphologyEx(mask,mask,cv.MORPH_CLOSE,k); k.delete();
 
   let contours=new cv.MatVector(), hier=new cv.Mat(); cv.findContours(mask,contours,hier,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
   mask.delete(); hier.delete();
 
-  let out=[]; 
+  let out=[];
   for(let i=0;i<contours.size();i++){
     let r=cv.boundingRect(contours.get(i));
     const ar=(r.width*r.height)/(w*h);
     const aspect = r.width/(r.height+1e-6);
-    // 帯状の塊のみ
     if(ar>0.002 && ar<0.20 && aspect>1.2 && aspect<8.0){
       out.push({x:r.x,y:r.y,w:r.width,h:r.height,label:'点字ブロック', prio:2});
     }
@@ -142,41 +142,34 @@ function detectTactileSimple(srcRGBA){
   return out;
 }
 
-// ===== 階段検出（厳格化：下部限定＋横長＋縞数） =====
+/* ------------ 階段（ピーク8本＋横幅60%以上） ------------ */
 function detectStairs(srcRGBA){
   if(!cvReady) return null;
   const W=srcRGBA.cols, H=srcRGBA.rows;
-  const y0 = Math.floor(H*0.60), hh = Math.max(24, Math.floor(H*0.40)); // 下 40% を解析
+  const y0 = Math.floor(H*0.60), hh = Math.max(24, Math.floor(H*0.40)); // 下40%
   let roi = srcRGBA.roi(new cv.Rect(0, y0, W, hh));
   let g = new cv.Mat(); cv.cvtColor(roi, g, cv.COLOR_RGBA2GRAY);
   cv.equalizeHist(g,g);
   cv.GaussianBlur(g,g,new cv.Size(3,3),0);
   let edges = new cv.Mat(); cv.Canny(g, edges, 60, 120);
 
-  // y方向投影ヒストグラムで縞数を数える
   let hist = new Array(roi.rows).fill(0);
-  for(let y=0;y<roi.rows;y++){
-    for(let x=0;x<roi.cols;x++){
-      if(edges.ucharPtr(y,x)[0]>0) hist[y]++;
-    }
-  }
-  // 局所ピーク
-  let peaks = 0; const th = Math.max(25, 0.12*W);
+  for(let y=0;y<roi.rows;y++){ for(let x=0;x<roi.cols;x++){ if(edges.ucharPtr(y,x)[0]>0) hist[y]++; } }
+  let peaks = 0; const th = Math.max(30, 0.15*W);
+  let maxRow = 0;
   for(let y=2;y<hist.length-2;y++){
-    if(hist[y]>hist[y-1] && hist[y]>hist[y-2] && hist[y]>hist[y+1] && hist[y]>hist[y+2] && hist[y]> th){ peaks++; }
+    if(hist[y]>hist[y-1] && hist[y]>hist[y-2] && hist[y]>hist[y+1] && hist[y]>hist[y+2] && hist[y]> th){ peaks++; maxRow = Math.max(maxRow, hist[y]); }
   }
-
+  const wideOk = maxRow > 0.60 * W;   // 横方向カバー率 ≥60%
   let result = null;
-  if(peaks>=6){
-    // 横長条件
+  if(peaks>=8 && wideOk){
     result = {x:Math.floor(W*0.05), y:y0, w:Math.floor(W*0.90), h:hh, label:'階段', prio:1};
   }
-
   g.delete(); edges.delete(); roi.delete();
   return result;
 }
 
-// ===== ポール簡易検出（縦長細幅） =====
+/* ------------ ポール（縦長細幅＋足元寄り） ------------ */
 function detectPoles(srcRGBA){
   if(!cvReady) return [];
   const W=srcRGBA.cols, H=srcRGBA.rows;
@@ -200,7 +193,7 @@ function detectPoles(srcRGBA){
   return out;
 }
 
-// ===== 平面（壁/扉）検出（緩和） =====
+/* ------------ 平面（壁/扉）緩和 ------------ */
 function detectPlanarObstacle(srcRGBA){
   if(!cvReady) return null;
   const W=srcRGBA.cols, H=srcRGBA.rows;
@@ -213,7 +206,6 @@ function detectPlanarObstacle(srcRGBA){
   const sigma = stddev.data64F[0];
   gray.delete(); mean.delete(); stddev.delete();
 
-  // 緩和：模様付きの壁も拾う
   if(edgeRatio < 0.06 && sigma < 40){
     const cx = Math.floor(W*0.15), cy = Math.floor(H*0.15);
     const cw = Math.floor(W*0.70), ch = Math.floor(H*0.70);
@@ -226,6 +218,7 @@ function detectPlanarObstacle(srcRGBA){
   return null;
 }
 
+/* ------------ ガード ------------ */
 function nearFieldGuard(stable, W, H){
   for(const d of stable){
     const bottom = d.y + d.h;
@@ -237,7 +230,6 @@ function nearFieldGuard(stable, W, H){
   }
   return {hit:false};
 }
-
 let lastAreas = new Map();
 function approachingGuard(stable){
   const now = performance.now();
@@ -256,22 +248,21 @@ function approachingGuard(stable){
   return {hit:false};
 }
 
-// ===== 安定化 =====
+/* ------------ 安定化（2フレームに短縮） ------------ */
 let trackBuf = [];
 function iou(a,b){ const x1=Math.max(a.x,b.x), y1=Math.max(a.y,b.y); const x2=Math.min(a.x+a.w,b.x+b.w), y2=Math.min(a.y+a.h,b.y+b.h); const inter=Math.max(0,x2-x1)*Math.max(0,y2-y1); const u=a.w*a.h + b.w*b.h - inter; return u>0? inter/u : 0; }
 function stabilize(dets){
   const now=performance.now();
   dets.forEach(d=>{ let m=trackBuf.find(t=>t.label===d.label && iou(t,d)>0.5); if(m){ m.x=d.x; m.y=d.y; m.w=d.w; m.h=d.h; m.count=Math.min(m.count+1,5); m.ts=now; m.prio=d.prio??m.prio; } else { trackBuf.push({...d,count:1,ts:now}); } });
   trackBuf = trackBuf.filter(t=> now - t.ts < 900);
-  // 優先度（低数ほど重要）で整列
-  return trackBuf.filter(t=> t.count>=3).sort((a,b)=>(a.prio??5)-(b.prio??5));
+  return trackBuf.filter(t=> t.count>=2).sort((a,b)=>(a.prio??5)-(b.prio??5)); // ← 2フレーム
 }
 
-// ===== 信号機 色判定 =====
+/* ------------ 信号機 色判定（青を広く・閾値激甘） ------------ */
 function classifyTrafficLightColor(srcRGBA, box){
-  // box は view 座標。ROI から HSV 色票を数える
+  // 上半分を重点（ライト球）
   const x = Math.max(0, Math.floor(box.x)), y = Math.max(0, Math.floor(box.y));
-  const w = Math.max(2, Math.floor(box.w)), h = Math.max(2, Math.floor(box.h));
+  const w = Math.max(2, Math.floor(box.w)), h = Math.max(2, Math.floor(box.h/2));
   const W=srcRGBA.cols, H=srcRGBA.rows;
   const rect = new cv.Rect(Math.max(0, Math.min(x,W-2)), Math.max(0, Math.min(y,H-2)),
                            Math.max(2, Math.min(w, W-x)), Math.max(2, Math.min(h, H-y)));
@@ -281,29 +272,35 @@ function classifyTrafficLightColor(srcRGBA, box){
 
   const mk = (a,b)=>{ let lo=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),a); let hi=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),b); let m=new cv.Mat(); cv.inRange(hsv,lo,hi,m); lo.delete(); hi.delete(); return m; };
 
-  // 赤は 2レンジ（0付近と180付近）
-  let red1 = mk([0,120,120,0], [10,255,255,255]);
-  let red2 = mk([170,120,120,0], [180,255,255,255]);
+  // 赤（2レンジ）
+  let red1 = mk([0,110,80,0], [10,255,255,255]);
+  let red2 = mk([170,110,80,0], [180,255,255,255]);
   let red = new cv.Mat(); cv.add(red1, red2, red); red1.delete(); red2.delete();
 
-  // 日本の青は緑〜青寄り（“青信号”）
-  let green = mk([40,120,100,0], [90,255,255,255]);   // 緑
-  let blue  = mk([90,120,100,0], [130,255,255,255]);  // 青
-  let yellow= mk([15,120,120,0], [35,255,255,255]);   // 黄
+  // 緑と青を広く
+  let green = mk([35,80,80,0],  [85,255,255,255]);
+  let blue  = mk([85,80,80,0],  [140,255,255,255]);
+  let yellow= mk([15,110,90,0], [35,255,255,255]);
+
+  // 軽い開口で点ノイズ除去
+  let k=cv.Mat.ones(3,3,cv.CV_8U);
+  for(const m of [red,green,blue,yellow]){ cv.morphologyEx(m,m,cv.MORPH_OPEN,k); }
+  k.delete();
 
   const cnt = m => cv.countNonZero(m);
   const sr = cnt(red), sg = cnt(green), sb = cnt(blue), sy = cnt(yellow);
   red.delete(); green.delete(); blue.delete(); yellow.delete(); hsv.delete(); roi.delete();
 
+  // 面積閾値：5px 相当まで甘く
   const maxv = Math.max(sr, sg, sb, sy);
-  if(maxv < 50) return null; // 面積閾値
+  if(maxv < 5) return null;
   if(maxv === sr) return '赤';
   if(maxv === sy) return '黄';
   if(maxv === sg || maxv === sb) return '青';
   return null;
 }
 
-// ===== メインループ =====
+/* ------------ メインループ ------------ */
 let offscreen = document.createElement('canvas'); let ofx = offscreen.getContext('2d');
 let warnedModelNotReady = false;
 let clearFrames = 0;
@@ -319,7 +316,6 @@ async function runLoop(){
     requestAnimationFrame(runLoop); return;
   }
 
-  // 軽量推論
   const infW=256, infH=Math.max(1, Math.floor(H*(256/Math.max(1,W))));
   offscreen.width=infW; offscreen.height=infH;
   ofx.drawImage(video,0,0,infW,infH);
@@ -332,23 +328,21 @@ async function runLoop(){
   const scaleX=W/infW, scaleY=H/infH;
   let dets = detections.map(p=>{ let [x,y,w,h]=p.bbox; x*=scaleX; y*=scaleY; w*=scaleX; h*=scaleY; return {x,y,w,h,label:(LABEL_JA[p.class]||p.class), prio:4, rawClass:p.class}; });
 
-  // === 点字ブロック ===
+  // 点字
   if(chkTactile.checked && cvReady){
     try{ const src=cv.imread(view); const tacts=detectTactileSimple(src); dets=dets.concat(tacts); src.delete(); }
     catch(e){ logOnce('cv-error-tact','opencv tactile error:', e && e.message ? e.message : e); }
   }
-
-  // === 階段 ===
+  // 階段
   if(chkStair.checked && cvReady){
     try{ const src=cv.imread(view); const r=detectStairs(src); src.delete(); if(r) dets.push(r); }catch(e){}
   }
-
-  // === ポール ===
+  // ポール
   if(chkPole.checked && cvReady){
     try{ const src=cv.imread(view); const poles=detectPoles(src); dets=dets.concat(poles); src.delete(); }catch(e){}
   }
 
-  // === 信号色判定（traffic light → HSV分類＋読み上げ） ===
+  // 信号色
   if(cvReady){
     try{
       const src=cv.imread(view);
@@ -357,8 +351,8 @@ async function runLoop(){
           const col = classifyTrafficLightColor(src, d);
           if(col){
             d.label = `信号機（${col}）`;
-            d.prio = 1; // 高優先
-            speakThrottled(`${col} しんごう です`, 'traffic_'+col);
+            d.prio = 1;
+            speakThrottled(`${col} しんごう です`, 'traffic_'+col, 1600);
           }
         }
       }
@@ -366,18 +360,41 @@ async function runLoop(){
     }catch(e){}
   }
 
-  // 安定化＆重複除去（点字を優先して階段と競合時は点字を残す）
-  // まず安定化
+  // ===== ポールは「安定化不要で即読み上げ」も併用（8m / ±60°） =====
+  for(const d of dets){
+    if(d.label==='ポール'){
+      const dist = estDistanceMeters(d.w,d.h,W,H);
+      const deg = centerAngleDeg(d.x+d.w/2, d.y+d.h/2, W, H);
+      const offCenter = Math.min(Math.abs(deg), 360-Math.abs(deg));
+      if(dist < 8.0 && offCenter <= 60){
+        speakThrottled('ポール ちゅうい', 'pole_warn_fast', 2000);
+      }
+    }
+  }
+
+  // 安定化（2フレーム）
   let stable = stabilize(dets);
 
-  // 競合解決：強く重なる「点字ブロック」 vs 「階段」
+  // 点字 vs 階段の競合は点字優先
   stable = stable.filter((a,i,arr)=>{
     if(a.label!=='点字ブロック') return true;
     const overlapIdx = arr.findIndex(b=> b.label==='階段' && iou(a,b)>0.5);
-    return overlapIdx===-1; // 階段と被ってたら階段の方を落とす
+    return overlapIdx===-1;
   });
 
-  // === 衝突ガード ===
+  // ===== 点字：5m / ±60° で必ず案内 =====
+  for(const d of stable){
+    if(d.label==='点字ブロック'){
+      const dist = estDistanceMeters(d.w,d.h,W,H);
+      const deg = centerAngleDeg(d.x+d.w/2, d.y+d.h/2, W, H);
+      const offCenter = Math.min(Math.abs(deg), 360-Math.abs(deg));
+      if(dist < 5.0 && offCenter <= 60){
+        speakThrottled('てんじブロック あります。なぞって すすみます', 'tactile_guide', 3000);
+      }
+    }
+  }
+
+  // ガード
   let danger = null;
   if(chkGuard.checked && cvReady){
     try{
@@ -387,7 +404,6 @@ async function runLoop(){
       if(planar){ danger = {type:'planar', box:planar, message:'正面に壁や扉があります'}; }
     }catch(e){ /* ignore */ }
     if(!danger){
-      // ポール近距離注意を最優先
       const poleNear = stable.find(d=> d.label==='ポール' && estDistanceMeters(d.w,d.h,W,H) < 1.0);
       if(poleNear){ danger = {type:'pole', box:poleNear, message:'ポール 注意'}; }
     }
@@ -427,7 +443,7 @@ async function runLoop(){
                    : (d.label.startsWith('信号機（黄') ? '#ffecb3' : '#9cff9c')))));
     ctx.fillText(text, d.x+5, d.y-6);
 
-    if(d.label==='階段'){ speakThrottled(`まえ かいだん ちゅうい`, 'stairs'); }
+    if(d.label==='階段'){ speakThrottled('まえ かいだん ちゅうい', 'stairs', 2000); }
   });
 
   // 危険描画＆音声
@@ -436,43 +452,41 @@ async function runLoop(){
     const b = danger.box;
     ctx.strokeStyle = '#ff5252'; ctx.lineWidth=6; ctx.strokeRect(b.x,b.y,b.w,b.h);
     showToast(danger.message);
-    speakThrottled(danger.message, 'danger_'+danger.type);
+    speakThrottled(danger.message, 'danger_'+danger.type, 1600);
     announcedDanger = true; clearFrames = 0;
   }
 
-  // 5m安全アナウンス（危険なし＆中央±30°に5m未満なし）
+  // 5m安全
   const centerSafe = !announcedDanger && (function(){
     for(const d of stable){
       const deg = centerAngleDeg(d.x+d.w/2, d.y+d.h/2, W, H);
-      const offCenter = Math.min(Math.abs(deg-0), 360-Math.abs(deg-0));
+      const offCenter = Math.min(Math.abs(deg), 360-Math.abs(deg));
       const dist = estDistanceMeters(d.w,d.h,W,H);
       if(offCenter <= 30 && dist < 5) return false;
     }
     return true;
   })();
   clearFrames = centerSafe ? Math.min(clearFrames+1, 999) : 0;
-  if(clearFrames >= 6){ speakThrottled('しんこうほうこう 5メートル あんぜんです', 'clear_path'); clearFrames = 0; }
+  if(clearFrames >= 6){ speakThrottled('しんこうほうこう 5メートル あんぜんです', 'clear_path', 3800); clearFrames = 0; }
 
   const fps = (1000/(performance.now()-t0)).toFixed(1);
-  badge.textContent = `FPS:${fps}  安定:${stable.length}`;
-
+  document.getElementById('badge').textContent = `FPS:${fps}  安定:${stable.length}`;
   if(running) requestAnimationFrame(runLoop);
 }
 
-// ===== 起動シーケンス =====
+/* ------------ 起動 ------------ */
 (async function bootstrap(){
   try{
-    badge.textContent='カメラ起動中…（許可してください）'; await initCamera();
+    badge.textContent='カメラ起動中…'; await initCamera();
     badge.textContent='モデル読込中…'; model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
     badge.textContent='OpenCV初期化中…'; await cvReadyPromise;
     allReady = true; btn.disabled=false; btn.classList.add('ready');
-    badge.textContent='準備完了：開始で実行（点字/ガード/階段/ポールはチェックでON）';
-    log('準備完了。階段検出は下部限定＋縞数で厳格化、信号色はHSVで判定します。');
+    badge.textContent='準備完了：開始で実行（点字/ガード/階段/ポールはON推奨）';
+    log('音声強化：ポール8m±60°即発声／点字5m±60°案内／青信号HSV拡大／階段ピーク8本&横60%');
   }catch(e){
     log('初期化エラー:', e); badge.textContent='エラー：上のログを確認';
   }
 })();
-
 btn.onclick = ()=>{
   if(!allReady){ logOnce('not-ready','準備中。ボタンが緑になるまで待機してください。'); return; }
   if(!running){ running=true; btn.textContent='停止'; btn.classList.add('stop'); requestAnimationFrame(runLoop); }
