@@ -3,358 +3,232 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-<title>視覚ガイド（点字ブロック誤検出対策版）</title>
+<title>視覚ガイド SAFE版（まず確実に動く）</title>
 <style>
-  :root{
-    --ui-bg:#0b0b0cdd; --ui-text:#a7ff7a; --accent:#f0ff6a;
-    --warn:#ffa726; --good:#69f0ae;
-  }
-  *{box-sizing:border-box}
-  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,'Hiragino Kaku Gothic ProN',Meiryo,sans-serif}
-  #wrap{position:fixed;inset:0}
+  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui, -apple-system, Segoe UI, Roboto, 'Hiragino Kaku Gothic ProN', Meiryo, sans-serif}
+  #root{position:fixed;inset:0}
   video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-  #hud{position:fixed;left:0;right:0;bottom:0;padding:10px;display:grid;gap:8px;background:var(--ui-bg);backdrop-filter:saturate(120%) blur(4px)}
-  #topbar{position:fixed;left:0;right:0;top:0;padding:6px 10px;background:linear-gradient(180deg,#0009,#0000);font-size:14px}
-  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-  .row>label{font-size:12px;color:#d0ffd0;opacity:.9}
-  button,select,input[type=range]{appearance:none;border:none;border-radius:10px;padding:10px 14px;background:#1a1a1f;color:#fff}
-  button{background:#2b2b33;font-weight:600}
-  button.run{background:#2e7d32}
+  #hud{position:fixed;left:0;right:0;bottom:0;background:#0b0b0cdd;backdrop-filter:blur(2px);padding:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  button,select,input[type=range],label{font-size:14px}
+  button{padding:8px 12px;border:0;border-radius:10px;background:#2e7d32;color:#fff}
   button.stop{background:#c62828}
-  .pill{padding:6px 10px;border-radius:14px;background:#1a1a1f}
-  canvas{image-rendering:pixelated}
-  .label{
-    position:absolute;pointer-events:none;background:rgba(0,0,0,.55);
-    color:#9cff9c;padding:2px 6px;border-radius:6px;font-weight:700;
-    border:1.5px solid rgba(156,255,156,.7);font-size:min(4.5vw,20px)
-  }
+  #debug{position:fixed;left:8px;top:8px;right:8px;max-height:42vh;overflow:auto;background:#0008;border:1px solid #3a3; padding:6px;border-radius:8px;font:12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre-wrap}
+  .badge{display:inline-block;padding:2px 6px;border-radius:6px;background:#111;border:1px solid #444;margin-right:6px}
 </style>
 </head>
 <body>
-<div id="wrap">
+<div id="root">
   <video id="video" autoplay playsinline muted></video>
-  <canvas id="canvas"></canvas>
+  <canvas id="view"></canvas>
 </div>
 
-<div id="topbar"><span id="status">準備中…</span></div>
+<div id="debug"></div>
 
 <div id="hud">
-  <div class="row">
-    <button id="btnRun" class="run">開始</button>
-    <button id="btnSpeak">読み上げテスト</button>
-    <label>検出: 
-      <select id="mode">
-        <option value="all">すべて</option>
-        <option value="important">重要のみ（人・車・自転車・バス）</option>
-        <option value="tactile">点字ブロックのみ</option>
-      </select>
-    </label>
-    <label>床領域（下%）<input type="range" id="floorPct" min="20" max="70" value="40"></label>
-    <label>最大表示件数<input type="range" id="maxItems" min="1" max="10" value="5"></label>
-  </div>
+  <button id="btn">開始</button>
+  <label><input type="checkbox" id="chkTactile"> 点字ブロック検出（負荷あり）</label>
+  <label>最大件数 <input type="range" id="maxItems" min="1" max="8" value="4"></label>
+  <span class="badge" id="badge">準備中…</span>
 </div>
 
-<!-- libs -->
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.18.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3"></script>
-<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
-
+<script src="https://docs.opencv.org/4.x/opencv.js" async></script>
 <script>
-const $ = (s)=>document.querySelector(s);
-const video = $('#video');
-const canvas = $('#canvas');
-const ctx = canvas.getContext('2d');
-const statusEl = $('#status');
-const btnRun = $('#btnRun');
-const btnSpeak = $('#btnSpeak');
-const modeSel = $('#mode');
-const floorPct = $('#floorPct');
-const maxItems = $('#maxItems');
+const logEl = document.getElementById('debug');
+function log(){ const t = new Date().toLocaleTimeString(); logEl.textContent += `[${t}] ` + Array.from(arguments).join(' ') + '\\n'; logEl.scrollTop = logEl.scrollHeight; }
+const badge = document.getElementById('badge');
+const btn = document.getElementById('btn');
+const chkTactile = document.getElementById('chkTactile');
+const maxItems = document.getElementById('maxItems');
 
-let running = false;
-let model = null;
-let readyCV = false;
+const video = document.getElementById('video');
+const view = document.getElementById('view');
+const ctx = view.getContext('2d');
 
-// 日本語読み固定（読み仮名オーバーライド）
-const READING_OVERRIDES = new Map([
-  ['方向','ほうこう'], ['信号','しんごう'], ['横断歩道','おうだんほどう'],
-  ['人','ひと'], ['自転車','じてんしゃ'], ['車','くるま']
-]);
+let running=false, model=null, cvReady=false;
 
-function toKanaForTTS(str){
-  for(const [k,v] of READING_OVERRIDES) str = str.replaceAll(k,v);
-  return str;
-}
-function speakJa(text){
-  const u = new SpeechSynthesisUtterance(toKanaForTTS(text));
-  u.lang = 'ja-JP';
-  speechSynthesis.cancel();
-  speechSynthesis.speak(u);
-}
-btnSpeak.onclick = ()=>speakJa('テスト 11じ ほうこう 5メートル');
+// Ensure tfjs backend
+(async()=>{
+  try{
+    if(tf && tf.setBackend){
+      await tf.setBackend('webgl').catch(async e=>{ log('webgl backend failed, fallback to cpu'); await tf.setBackend('cpu'); });
+      await tf.ready();
+      log('TFJS backend:', tf.getBackend());
+    }
+  }catch(e){ log('TFJS init error:', e); }
+})();
 
-// 英語ラベル→日本語
-const LABEL_JA = {
-  'person':'人','bicycle':'自転車','car':'車','motorcycle':'バイク','bus':'バス','train':'電車',
-  'truck':'トラック','traffic light':'信号機','fire hydrant':'消火栓','stop sign':'一時停止',
-  'parking meter':'パーキングメーター','bench':'ベンチ','bird':'とり','cat':'ねこ','dog':'いぬ',
-  'backpack':'リュックサック','umbrella':'かさ','handbag':'ハンドバッグ','tie':'ネクタイ',
-  'suitcase':'スーツケース','frisbee':'フリスビー','skis':'スキー','snowboard':'スノーボード',
-  'sports ball':'ボール','kite':'たこ','baseball bat':'バット','baseball glove':'グローブ',
-  'skateboard':'スケートボード','surfboard':'サーフボード','tennis racket':'テニスラケット',
-  'bottle':'ボトル','wine glass':'ワイングラス','cup':'コップ','fork':'フォーク','knife':'ナイフ',
-  'spoon':'スプーン','bowl':'ボウル','banana':'バナナ','apple':'りんご','sandwich':'サンドイッチ',
-  'orange':'オレンジ','broccoli':'ブロッコリー','carrot':'にんじん','hot dog':'ホットドッグ',
-  'pizza':'ピザ','donut':'ドーナツ','cake':'ケーキ','chair':'いす','couch':'ソファ',
-  'potted plant':'植木鉢','bed':'ベッド','dining table':'テーブル','toilet':'トイレ',
-  'tv':'テレビ','laptop':'ノートパソコン','mouse':'マウス','remote':'リモコン',
-  'keyboard':'キーボード','cell phone':'けいたいでんわ','microwave':'電子レンジ','oven':'オーブン',
-  'toaster':'トースター','sink':'シンク','refrigerator':'れいぞうこ','book':'本','clock':'時計',
-  'vase':'花びん','scissors':'はさみ','teddy bear':'テディベア','hair drier':'ドライヤー',
-  'toothbrush':'はぶらし'
-};
-const IMPORTANT = new Set(['person','bicycle','car','bus','motorcycle','truck']);
+// OpenCV ready promise
+const cvReadyPromise = new Promise(res=>{
+  if (window.cv && cv.getBuildInformation) {
+    cv['onRuntimeInitialized'] = ()=>{ cvReady=true; log('OpenCV ready'); res(); };
+  } else {
+    window.Module = { onRuntimeInitialized() { cvReady=true; log('OpenCV ready'); res(); } };
+  }
+});
 
 async function initCamera(){
-  const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}, audio:false});
+  const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment', width:{ideal:1280}, height:{ideal:720} }, audio:false });
   video.srcObject = stream;
   await video.play();
-  resizeCanvas();
+  resize();
+  log('Camera initialized', video.videoWidth+'x'+video.videoHeight);
 }
-function resizeCanvas(){
-  canvas.width = video.videoWidth || canvas.clientWidth;
-  canvas.height = video.videoHeight || canvas.clientHeight;
+function resize(){
+  view.width = video.videoWidth || view.clientWidth;
+  view.height = video.videoHeight || view.clientHeight;
 }
-window.addEventListener('resize', resizeCanvas);
+window.addEventListener('resize', resize);
 
-// ===== 点字ブロック検出 (誤検出対策) =====
-const YELLOW_LO = [18, 140, 120, 0];
-const YELLOW_HI = [36, 255, 255, 255];
-const MIN_AREA_RATIO = 0.002;  // 0.2%
-const MAX_AREA_RATIO = 0.20;   // 20%
-const MAX_TILT_DEG = 25;
-const STABLE_FRAMES = 3;
-let tactileTrack = []; // 安定化用
-
-function detectTactilePaving(srcRGBA){
-  if(!readyCV) return [];
-  // 輝度判定で暗所は停止（簡易）
-  let gray = new cv.Mat(); cv.cvtColor(srcRGBA, gray, cv.COLOR_RGBA2GRAY);
-  let mean = cv.mean(gray)[0]; gray.delete();
-  if(mean < 40) return [];
-
-  // 色抽出
-  let rgb=new cv.Mat(); cv.cvtColor(srcRGBA, rgb, cv.COLOR_RGBA2RGB);
-  let hsv=new cv.Mat(); cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV); rgb.delete();
-  let lo=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),YELLOW_LO);
-  let hi=new cv.Mat(hsv.rows,hsv.cols,hsv.type(),YELLOW_HI);
-  let mask=new cv.Mat(); cv.inRange(hsv, lo, hi, mask); lo.delete(); hi.delete(); hsv.delete();
-
-  // 床領域（下x%）
-  const h = mask.rows, w = mask.cols;
-  const floorH = Math.floor(h * (parseInt(floorPct.value,10)/100));
-  let roiMask = new cv.Mat.zeros(h, w, cv.CV_8UC1);
-  let rect = new cv.Rect(0, h-floorH, w, floorH);
-  roiMask.roi(rect).setTo(new cv.Scalar(255));
-  cv.bitwise_and(mask, roiMask, mask); roiMask.delete();
-
-  // ノイズ除去
-  let k = cv.Mat.ones(5,5, cv.CV_8U);
-  cv.morphologyEx(mask, mask, cv.MORPH_OPEN, k);
-  cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, k);
-  k.delete();
-
-  // 輪郭
-  let contours=new cv.MatVector(), hier=new cv.Mat();
-  cv.findContours(mask, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-  mask.delete(); hier.delete();
-
-  let boxes = [];
-  for(let i=0;i<contours.size();i++){
-    let cnt = contours.get(i);
-    let rect = cv.minAreaRect(cnt);
-    let pts = cv.RotatedRect.points(rect);
-    let xs = pts.map(p=>p.x), ys = pts.map(p=>p.y);
-    let x = Math.max(0, Math.min(...xs)), y = Math.max(0, Math.min(...ys));
-    let ww = Math.min(w, Math.max(...xs)) - x;
-    let hh = Math.min(h, Math.max(...ys)) - y;
-    let area = ww*hh, ar = area/(w*h);
-    if(ar < MIN_AREA_RATIO || ar > MAX_AREA_RATIO){ cnt.delete(); continue; }
-
-    let size = rect.size;
-    let longSide = Math.max(size.width,size.height);
-    let shortSide = Math.min(size.width,size.height);
-    let aspect = longSide/(shortSide+1e-6);
-    if(aspect < 1.2 || aspect > 6.0){ cnt.delete(); continue; }
-
-    let angle = Math.abs(rect.angle);
-    let tilt = Math.min(Math.abs(angle-0), Math.abs(angle-90));
-    if(tilt > MAX_TILT_DEG){ cnt.delete(); continue; }
-
-    // テクスチャ検証
-    let roi = srcRGBA.roi(new cv.Rect(Math.max(0,x), Math.max(0,y), Math.max(1,ww), Math.max(1,hh)));
-    let ok = textureCheck(roi);
-    roi.delete(); cnt.delete();
-    if(!ok) continue;
-    boxes.push({x, y, w:Math.max(1,ww), h:Math.max(1,hh)});
-  }
-  contours.delete();
-  return confirmStable(boxes);
-}
-function textureCheck(roiRGBA){
-  // 平行線の多数検出 (誘導ブロック)
-  let g=new cv.Mat(); cv.cvtColor(roiRGBA,g,cv.COLOR_RGBA2GRAY);
-  cv.GaussianBlur(g,g,new cv.Size(3,3),0);
-  let edges=new cv.Mat(); cv.Canny(g,edges,60,120);
-  let lines=new cv.Mat();
-  cv.HoughLines(edges,lines,1,Math.PI/180,30);
-  let ang=[]; for(let i=0;i<lines.rows;i++){ ang.push(lines.data32F[i*2+1]); }
-  g.delete(); edges.delete(); lines.delete();
-  ang.sort((a,b)=>a-b);
-  let maxCl=0,cl=1;
-  for(let i=1;i<ang.length;i++){
-    if(Math.abs(ang[i]-ang[i-1])<(10*Math.PI/180)) cl++; else {maxCl=Math.max(maxCl,cl); cl=1;}
-  }
-  maxCl=Math.max(maxCl,cl);
-  if(maxCl>=4) return true;
-
-  // 円点列ざっくり（警告ブロック）
-  let gg=new cv.Mat(); cv.cvtColor(roiRGBA,gg,cv.COLOR_RGBA2GRAY);
-  cv.GaussianBlur(gg,gg,new cv.Size(9,9),2);
-  let circles=new cv.Mat();
-  cv.HoughCircles(gg,circles,cv.HOUGH_GRADIENT,1.2,12,80,18,3,12);
-  gg.delete();
-  if(!circles.empty() && circles.cols>=6){ circles.delete(); return true; }
-  circles.delete();
-  return false;
-}
-function confirmStable(current){
-  const iou=(a,b)=>{
-    const x1=Math.max(a.x,b.x), y1=Math.max(a.y,b.y);
-    const x2=Math.min(a.x+a.w, b.x+b.w), y2=Math.min(a.y+a.h, b.y+b.h);
-    const inter=Math.max(0,x2-x1)*Math.max(0,y2-y1);
-    const u=a.w*a.h + b.w*b.h - inter;
-    return u>0? inter/u:0;
-  };
-  let confirmed=[];
-  current.forEach(b=>{
-    let hit = tactileTrack.find(t=>iou(t.box,b)>0.3);
-    if(hit){ hit.box=b; hit.cnt++; }
-    else tactileTrack.push({box:b,cnt:1});
-  });
-  tactileTrack = tactileTrack.filter(t=>{
-    if(t.cnt>=STABLE_FRAMES){ confirmed.push(t.box); return false; }
-    return true;
-  });
-  return confirmed;
-}
-
-// ===== coco-ssd 検出 =====
-async function detectFrame(){
-  if(!running || !model) return;
-  resizeCanvas();
-  ctx.drawImage(video,0,0,canvas.width,canvas.height);
-
-  let detections = [];
+// TTS
+function speakJa(text){
   try{
-    detections = await model.detect(video);
-  }catch(e){ console.warn(e); }
-
-  // 重要フィルタ
-  const m = modeSel.value;
-  if(m==='important'){
-    detections = detections.filter(d=> IMPORTANT.has(d.class));
-  }
-
-  // 最大件数
-  detections.sort((a,b)=>b.score-a.score);
-  detections = detections.slice(0, parseInt(maxItems.value,10));
-
-  // Draw & announce
-  const W = canvas.width, H = canvas.height;
-  ctx.lineWidth = 4; ctx.font = `${Math.max(16, Math.floor(W*0.035))}px system-ui`;
-
-  let saidAny = false;
-  for(const p of detections){
-    if(p.score < 0.55) continue;
-    const [x,y,w,h] = p.bbox;
-    ctx.strokeStyle = 'rgba(0,255,0,0.9)';
-    ctx.fillStyle = 'rgba(0,0,0,.55)';
-    ctx.strokeRect(x,y,w,h);
-    const name = LABEL_JA[p.class] || p.class;
-    const angle = bearingLabel(x+w/2, y+h/2, W, H); // 方向
-    const dist = estDistanceMeters(w,h,W,H); // 簡易距離
-    const label = `${angle} ほうこう  ${name}  ${dist.toFixed(1)}m`;
-    const tw = ctx.measureText(label).width+10;
-    ctx.fillRect(x, Math.max(0,y-28), tw, 28);
-    ctx.fillStyle = '#9cff9c';
-    ctx.fillText(label, x+5, y-8);
-
-    if(!saidAny){
-      speakJa(`${angle} ほうこう ${name} ${dist.toFixed(1)}メートル`);
-      saidAny = true;
-    }
-  }
-
-  // 点字ブロック（常時または専用モード）
-  if(m==='all' || m==='tactile'){
-    const src = cv.imread(canvas); // すでに描いたフレームから処理
-    const boxes = detectTactilePaving(src);
-    src.delete();
-    ctx.strokeStyle = '#ffa726'; ctx.lineWidth = 5;
-    for(const b of boxes){
-      ctx.strokeRect(b.x, b.y, b.w, b.h);
-      ctx.fillStyle='rgba(0,0,0,.55)';
-      const label='点字ブロック';
-      const tw=ctx.measureText(label).width+10;
-      ctx.fillRect(b.x, Math.max(0,b.y-28), tw, 28);
-      ctx.fillStyle='#ffd27f'; ctx.fillText(label, b.x+5, b.y-8);
-    }
-  }
-
-  if(running) requestAnimationFrame(detectFrame);
+    const u = new SpeechSynthesisUtterance(text.replaceAll('方向','ほうこう').replaceAll('信号','しんごう'));
+    u.lang='ja-JP'; speechSynthesis.cancel(); speechSynthesis.speak(u);
+  }catch(e){ log('TTS error', e); }
 }
 
-// 方位ラベル（画面中心基準のざっくり 1〜12時）
+// Simple bearing (1~12 o'clock)
 function bearingLabel(cx, cy, W, H){
-  const dx = cx - W/2;
-  const dy = H/2 - cy;
-  let deg = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+  const dx = cx - W/2, dy = H/2 - cy;
+  let deg = (Math.atan2(dy, dx)*180/Math.PI + 360) % 360;
   const hour = Math.round(deg/30) || 12;
   return `${hour}じ`;
 }
-// 距離推定（簡易）：画面占有率からのヒューリスティック
+// Heuristic distance
 function estDistanceMeters(w,h,W,H){
   const areaRatio = (w*h)/(W*H);
-  // 視覚ガイド用途の擬似関数：近いほど比率が大きい → ~1/sqrt
-  const d = 0.6 / Math.sqrt(Math.max(areaRatio, 1e-6)); // 調整可能
-  return Math.min(10, Math.max(0.3, d));
+  return Math.min(10, Math.max(0.3, 0.6/Math.sqrt(Math.max(areaRatio,1e-6))));
 }
 
-btnRun.onclick = async()=>{
-  running = !running;
-  btnRun.textContent = running ? '停止' : '開始';
-  btnRun.className = running ? 'stop' : 'run';
-  if(running) requestAnimationFrame(detectFrame);
+// Tactile detection (simplified + guarded)
+function detectTactileSimple(srcRGBA){
+  if(!cvReady) return [];
+  let gray = new cv.Mat();
+  cv.cvtColor(srcRGBA, gray, cv.COLOR_RGBA2GRAY);
+  let mean = cv.mean(gray)[0]; gray.delete();
+  if(mean < 40) return [];
+
+  let rgb=new cv.Mat(); cv.cvtColor(srcRGBA,rgb,cv.COLOR_RGBA2RGB);
+  let hsv=new cv.Mat(); cv.cvtColor(rgb,hsv,cv.COLOR_RGB2HSV); rgb.delete();
+  let lo=new cv.Mat(hsv.rows,hsv.cols,hsv.type(), [18,140,120,0]);
+  let hi=new cv.Mat(hsv.rows,hsv.cols,hsv.type(), [36,255,255,255]);
+  let mask=new cv.Mat(); cv.inRange(hsv,lo,hi,mask); lo.delete(); hi.delete(); hsv.delete();
+
+  // bottom 40%
+  const h = mask.rows, w = mask.cols;
+  const floorH = Math.floor(h*0.4);
+  let roiMask = new cv.Mat.zeros(h,w,cv.CV_8UC1);
+  roiMask.roi(new cv.Rect(0,h-floorH,w,floorH)).setTo(new cv.Scalar(255));
+  cv.bitwise_and(mask,roiMask,mask); roiMask.delete();
+
+  // morphology
+  let k = cv.Mat.ones(5,5,cv.CV_8U);
+  cv.morphologyEx(mask,mask,cv.MORPH_OPEN,k);
+  cv.morphologyEx(mask,mask,cv.MORPH_CLOSE,k); k.delete();
+
+  let contours=new cv.MatVector(), hier=new cv.Mat();
+  cv.findContours(mask,contours,hier,cv.RETR_EXTERNAL,cv.CHAIN_APPROX_SIMPLE);
+  mask.delete(); hier.delete();
+
+  let out=[];
+  for(let i=0;i<contours.size();i++){
+    let r = cv.boundingRect(contours.get(i));
+    const ar = (r.width*r.height)/(w*h);
+    const aspect = r.width>r.height ? r.width/(r.height+1e-6) : r.height/(r.width+1e-6);
+    if(ar>0.002 && ar<0.2 && aspect>1.2 && aspect<6.0){
+      out.push(r);
+    }
+  }
+  contours.delete();
+  return out;
+}
+
+let offscreen = document.createElement('canvas');
+let ofx = offscreen.getContext('2d');
+
+async function runLoop(){
+  if(!running) return;
+  resize();
+  const W=view.width, H=view.height;
+  ctx.drawImage(video,0,0,W,H);
+
+  // downscale for detection
+  const infW=320, infH=Math.floor(H*(320/W));
+  offscreen.width=infW; offscreen.height=infH;
+  ofx.drawImage(video,0,0,infW,infH);
+
+  let t0=performance.now();
+  let detections = [];
+  try{
+    detections = await model.detect(offscreen);
+  }catch(e){ log('detect error:', e); }
+  let t1=performance.now();
+
+  // draw
+  detections.sort((a,b)=>b.score-a.score);
+  detections = detections.slice(0, parseInt(maxItems.value,10));
+  ctx.lineWidth = 3; ctx.font = `${Math.max(14, Math.floor(W*0.032))}px system-ui`;
+  let said = false;
+  for(const p of detections){
+    if(p.score<0.55) continue;
+    const scaleX = W/infW, scaleY = H/infH;
+    let [x,y,w,h]=p.bbox;
+    x*=scaleX; y*=scaleY; w*=scaleX; h*=scaleY;
+    ctx.strokeStyle='rgba(0,255,0,.9)'; ctx.fillStyle='rgba(0,0,0,.55)';
+    ctx.strokeRect(x,y,w,h);
+    const name = ({'person':'人','bicycle':'自転車','car':'車','bus':'バス','motorcycle':'バイク','truck':'トラック',
+                   'laptop':'ノートパソコン','mouse':'マウス','backpack':'リュックサック','traffic light':'信号機'})[p.class] || p.class;
+    const angle = bearingLabel(x+w/2,y+h/2,W,H);
+    const dist = estDistanceMeters(w,h,W,H);
+    const label = `${angle} ほうこう  ${name}  ${dist.toFixed(1)}m`;
+    const tw = ctx.measureText(label).width + 10;
+    ctx.fillRect(x, Math.max(0,y-24), tw, 24);
+    ctx.fillStyle='#9cff9c'; ctx.fillText(label, x+5, y-6);
+    if(!said){ speakJa(`${angle} ほうこう ${name} ${dist.toFixed(1)}メートル`); said=true; }
+  }
+
+  // tactile (optional)
+  if(chkTactile.checked){
+    try{
+      const src=cv.imread(view);
+      const boxes=detectTactileSimple(src);
+      src.delete();
+      ctx.strokeStyle='#ffa726'; ctx.lineWidth=5; ctx.fillStyle='rgba(0,0,0,.55)';
+      for(const b of boxes){
+        ctx.strokeRect(b.x,b.y,b.width,b.height);
+        const label='点字ブロック';
+        const tw=ctx.measureText(label).width+10;
+        ctx.fillRect(b.x, Math.max(0,b.y-24), tw, 24);
+        ctx.fillStyle='#ffd27f'; ctx.fillText(label, b.x+5, b.y-6);
+      }
+    }catch(e){ log('tactile error:', e); }
+  }
+
+  const fps = (1000/(performance.now()-t0)).toFixed(1);
+  badge.textContent = `FPS:${fps} / det:${(t1-t0).toFixed(0)}ms`;
+  if(running) requestAnimationFrame(runLoop);
+}
+
+btn.onclick = async ()=>{
+  if(!running){
+    running = true; btn.textContent='停止'; btn.classList.add('stop');
+    requestAnimationFrame(runLoop);
+  }else{
+    running = false; btn.textContent='開始'; btn.classList.remove('stop');
+  }
 };
 
-// 初期化
 (async function bootstrap(){
-  statusEl.textContent = 'カメラ起動中…（許可してください）';
-  await initCamera().catch(err=>{ statusEl.textContent = 'カメラ起動エラー: '+err; });
-  statusEl.textContent = 'モデル読込中…';
-  model = await cocoSsd.load();
-  statusEl.textContent = 'OpenCV 初期化待機…';
-  // opencv.js の onRuntimeInitialized
-  if (window.cv && cv.getBuildInformation) {
-    cv['onRuntimeInitialized'] = ()=>{
-      readyCV = true;
-      statusEl.textContent = '準備完了：開始を押してください';
-    };
-  } else {
-    // 既に初期化済みの場合
-    readyCV = true;
-    statusEl.textContent = '準備完了：開始を押してください';
+  try{
+    badge.textContent = 'カメラ起動中…（許可してください）'; await initCamera();
+    badge.textContent = 'モデル読込中…'; model = await cocoSsd.load();
+    badge.textContent = 'OpenCV初期化中…'; await cvReadyPromise;
+    badge.textContent = '準備完了：開始で実行／点字はチェックをON';
+    log('準備完了。動作が重い場合は点字検出のチェックを外してください。');
+  }catch(e){
+    log('初期化エラー:', e); badge.textContent='エラー：詳細は上のログ';
   }
 })();
 </script>
